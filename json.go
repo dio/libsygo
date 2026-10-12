@@ -108,6 +108,18 @@ func appendOptionalBool(dst []byte, value *bool) []byte {
 	return strconv.AppendBool(dst, *value)
 }
 
+func appendFloat(dst []byte, value float64) []byte {
+	return strconv.AppendFloat(dst, value, 'g', -1, 64)
+}
+
+func appendInt(dst []byte, value int64) []byte {
+	return strconv.AppendInt(dst, value, 10)
+}
+
+func appendUint(dst []byte, value uint64) []byte {
+	return strconv.AppendUint(dst, value, 10)
+}
+
 func appendRaw(dst []byte, raw json.RawMessage) []byte {
 	if len(raw) == 0 {
 		return append(dst, "null"...)
