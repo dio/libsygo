@@ -38,9 +38,10 @@
 // noop/random/passthrough algorithms.
 //
 // The tool vocabulary is ported and tested — [ClassifyToolCall], [IsRetrievalTool] and
-// the shell rules they rest on — but nothing derives signals from it yet, so it feeds
-// no decision. It is exported because a host that already parses tool calls should be
-// able to ask the same questions this package will.
+// the shell rules they rest on, plus [SeverityOf] and the failure-identity rules
+// beside it — but nothing walks a conversation to derive signals from them yet, so
+// they feed no decision. They are exported because a host that already parses tool
+// calls should be able to ask the same questions this package will.
 //
 // # Conformance
 //
