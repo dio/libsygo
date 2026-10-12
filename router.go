@@ -179,6 +179,7 @@ func newStageRouter(profile Profile, models Models) (*Router, error) {
 			mode:                profile.Picker,
 			confidenceThreshold: profile.ConfidenceThreshold,
 			capableHoldTurns:    holdTurns,
+			notes:               handoffNotesFor(profile),
 		})
 
 	if profile.Judge != nil {

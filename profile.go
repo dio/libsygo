@@ -132,6 +132,11 @@ type Profile struct {
 	EscalationNote   string `json:"escalation_note"`
 	DeescalationNote string `json:"deescalation_note"`
 
+	// OnlyOnWrongSignalEscalation restricts the escalation note to escalations the
+	// signals made. Nil means yes, which is the safe default: an ungated note can tell
+	// the capable model the efficient one was stalling when it was not.
+	OnlyOnWrongSignalEscalation *bool `json:"only_on_wrong_signal_escalation"`
+
 	// ToolSemantics adds tool names to the built-in vocabulary. Additive: a built-in
 	// name cannot be reclassified, because the recorded signals were measured against
 	// the built-ins.

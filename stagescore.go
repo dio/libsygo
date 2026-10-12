@@ -168,10 +168,69 @@ type stageClassifier struct {
 	mode                PickerMode
 	confidenceThreshold float64
 	capableHoldTurns    uint32
+	notes               *handoffNotes
+}
+
+// handoffNotes are what a session is told when the signals move it between tiers.
+type handoffNotes struct {
+	escalation      string
+	deescalation    string
+	hasDeescalation bool
+	// onlyOnWrongSignalEscalation restricts the escalation note to escalations the
+	// signals made. It defaults on, because an ungated note can tell the capable model
+	// that the efficient one was stalling when it was not.
+	onlyOnWrongSignalEscalation bool
+}
+
+// noteFor returns the note a turn to this tier earned, if any.
+//
+// The de-escalation note is not gated: a hand-back to the cheap tier is a hand-back
+// whichever rule made it.
+func (n handoffNotes) noteFor(tier Tier, source DecisionSource) (string, bool) {
+	if tier == TierCapable {
+		signalDriven := source == SourceOverride || source == SourceDimensions
+		if n.onlyOnWrongSignalEscalation && !signalDriven {
+			return "", false
+		}
+		return n.escalation, true
+	}
+	if n.hasDeescalation {
+		return n.deescalation, true
+	}
+	return "", false
+}
+
+// applyHandoffNote splices the note this turn earned into the request the model will
+// receive.
+func (c *stageClassifier) applyHandoffNote(turn *Turn, tier Tier, source DecisionSource) {
+	if c.notes == nil || turn == nil {
+		return
+	}
+	if note, ok := c.notes.noteFor(tier, source); ok {
+		appendNote(&turn.Request, note)
+	}
+}
+
+// appendNote adds a note to the forwarded request.
+//
+// It appends to the last message when that message is a user turn — which keeps a tool
+// result first within its own message, where providers expect it — and otherwise starts
+// a new user message. The note describes this turn's routing, so it rides in the
+// forwarded request only and never becomes part of the caller's conversation, which is
+// why it is spliced per turn rather than accumulated.
+func appendNote(request *LlmRequest, note string) {
+	if length := len(request.Messages); length > 0 && request.Messages[length-1].Role == RoleUser {
+		request.Messages[length-1].Content = append(request.Messages[length-1].Content, Text(note))
+		return
+	}
+	request.Messages = append(request.Messages, Message{
+		Role:    RoleUser,
+		Content: []ContentBlock{Text(note)},
+	})
 }
 
 func (c *stageClassifier) Classify(
-	_ context.Context, state *State, _ *Turn, driver *Driver,
+	_ context.Context, state *State, turn *Turn, driver *Driver,
 ) (Classification, error) {
 	signal := state.ToolSignals
 	if signal == nil {
@@ -221,6 +280,10 @@ func (c *stageClassifier) Classify(
 	}
 	recordDecisionSource(state, outcome.source)
 
+	// Only a resolved turn earns a note: an abstaining one is decided further down the
+	// cascade, and the note would describe a decision this classifier did not make.
+	c.applyHandoffNote(turn, outcome.tier, outcome.source)
+
 	confidence := 2 * math.Abs(outcome.probability-0.5)
 	if outcome.confidence != nil {
 		confidence = *outcome.confidence
@@ -240,6 +303,26 @@ func (c *stageClassifier) Classify(
 		Category:   string(outcome.tier),
 		Confidence: confidence,
 	}), nil
+}
+
+// handoffNotesFor reads the notes a profile configures, if any.
+func handoffNotesFor(profile Profile) *handoffNotes {
+	if profile.EscalationNote == "" {
+		return nil
+	}
+	notes := &handoffNotes{
+		escalation: profile.EscalationNote,
+		// Gated unless the profile says otherwise.
+		onlyOnWrongSignalEscalation: true,
+	}
+	if profile.OnlyOnWrongSignalEscalation != nil {
+		notes.onlyOnWrongSignalEscalation = *profile.OnlyOnWrongSignalEscalation
+	}
+	if profile.DeescalationNote != "" {
+		notes.deescalation = profile.DeescalationNote
+		notes.hasDeescalation = true
+	}
+	return notes
 }
 
 // capableHoldKey is the state key the hold is counted under.
