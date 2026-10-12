@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-
-	"github.com/dio/libsygo/jev"
 )
 
 // Outcome is the terminal result of routing one turn.
@@ -26,41 +24,34 @@ type Outcome struct {
 	// on a latched session, `{source: "fail_open", reason_code}` on a fallback.
 	Evidence json.RawMessage
 
-	// Latched is true when a retained session target decided this turn and no
-	// judge call was made.
+	// Latched is true when a retained session decided this turn and no judge call
+	// was made.
 	Latched bool
 
 	// Error is set when the turn failed rather than mis-routed: a judge failure
-	// with FailOpen disabled. The caller should surface it, not route.
+	// with fail-open disabled. The caller should surface it, not route.
 	Error string
 
 	// Calls is how many judge calls this turn made (0 when latched).
 	Calls int
 }
 
-// Router is a built profile. It holds the per-session latch, so one Router serves
-// one tenant's profile: cache by (tenant, profile ID, revision) and namespace
-// session ids per tenant. A Router is safe for concurrent use.
+// Router is a built profile: a composition over the model pool.
 //
-// The judge [Decider] is supplied per Route call, not at construction, because it
-// is usually tied to a single request (the host's callout for that stream). The
-// Router itself is the long-lived, shared part.
+// It retains per-session state, so one Router serves one profile — cache it by
+// (tenant, profile ID, revision) and namespace session ids per tenant. A Router
+// is safe for concurrent use.
+//
+// The judge [Decider] is supplied per Route call rather than at construction,
+// because it is usually tied to a single request (the host's callout for that
+// stream). The Router is the long-lived, shared part.
 type Router struct {
-	judge           *Judge
-	instructions    json.RawMessage
-	failOpen        bool
-	sessionAffinity bool
-	models          Models
-
-	latched map[string]latch
+	cascade  *FallThrough
+	affinity *AffinityRouter
 }
 
-type latch struct {
-	model    string
-	category string
-}
-
-// New builds a router, rejecting anything outside tier 0/1 rather than guessing.
+// New builds a router, refusing anything not implemented rather than
+// approximating it.
 func New(profile Profile, models Models) (*Router, error) {
 	if profile.Algorithm != "llm_classifier" {
 		return nil, fmt.Errorf(
@@ -89,14 +80,28 @@ func New(profile Profile, models Models) (*Router, error) {
 		failOpen = *profile.FailOpen
 	}
 
-	return &Router{
-		judge:           profile.Judge,
-		instructions:    instructions,
-		failOpen:        failOpen,
-		sessionAffinity: profile.SessionAffinity,
-		models:          models,
-		latched:         map[string]latch{},
-	}, nil
+	capability := &capabilityClassifier{
+		judge:        profile.Judge,
+		instructions: instructions,
+		failOpen:     failOpen,
+	}
+
+	cascade := NewFallThrough("llm_classifier", models)
+	var affinity *AffinityRouter
+	if classifyTrigger(profile.SessionAffinity) != EveryRequest {
+		// The latch leads the cascade: a retained session decides without a judge
+		// call. Registered as both a processor and a classifier so the two roles
+		// share one assignment map.
+		affinity = NewAffinityRouter()
+		cascade.WithProcessor(affinity).WithClassifier(affinity)
+	}
+	cascade.
+		WithClassifier(capability).
+		// Closes the cascade, so a turn is never left unrouted — which is what
+		// makes fail-open land on the capable tier.
+		WithClassifier(DefaultCategoryClassifier{Category: categoryCapable})
+
+	return &Router{cascade: cascade, affinity: affinity}, nil
 }
 
 // Route decides one turn, making at most one judge call through decider.
@@ -105,126 +110,60 @@ func New(profile Profile, models Models) (*Router, error) {
 // a verdict that is missing, malformed, or the result of a failed call falls back
 // per FailOpen. A nil decider is treated as a failed call rather than a panic.
 func (r *Router) Route(ctx context.Context, turn Turn, decider Decider) Outcome {
-	if r.sessionAffinity && turn.Session != "" {
-		if held, ok := r.latched[turn.Session]; ok {
-			outcome := r.decide(held.model, held.category)
-			outcome.Latched = true
-			outcome.Evidence = json.RawMessage(`{"source":"retained"}`)
-			return outcome
+	outcome, err := r.cascade.route(ctx, turn, decider)
+	if err != nil {
+		return Outcome{
+			SelectedModelIDs: []string{},
+			Error:            err.Error(),
+			Calls:            outcome.Calls,
 		}
 	}
-
-	if decider == nil {
-		return r.fallback(reasonCallError, "no judge decider was supplied for this call")
-	}
-
-	request, err := r.buildJudgeRequest(turn.Prompt)
-	if err != nil {
-		return r.fallback(reasonCallError, err.Error())
-	}
-	response, err := decider.Call(ctx, request)
-	if err != nil {
-		return r.fallback(reasonCallError, err.Error())
-	}
-
-	score, ok := advantage(response)
-	if !ok {
-		return r.fallback(reasonInvalidVerdict, "")
-	}
-
-	model, category := r.tierFor(score)
-	if r.sessionAffinity && turn.Session != "" {
-		r.latched[turn.Session] = latch{model: model, category: category}
-	}
-	outcome := r.decide(model, category)
-	outcome.Calls = 1
-	outcome.Evidence = mustJSON(map[string]any{
-		"source":    "decision_classifier",
-		"verdict":   "relative_advantage",
-		"score":     score,
-		"threshold": r.judge.Cutoff,
-	})
 	return outcome
 }
 
-// Forget drops a session's retained target, so an ended session does not
-// accumulate. Honouring a session-final signal from the caller keeps a
-// long-lived gateway bounded.
+// Forget drops everything retained for a session — its composition state and its
+// latch assignment — so an ended session stops being routed by a stale target.
+// Honouring a session-final signal keeps a long-lived gateway bounded.
+//
+// This is a deliberate divergence from upstream, which clears the composition
+// state on a session-final signal but leaves the latch assignment to its own
+// bound. A Forget that does not release the target is a footgun, and the latch is
+// the retained state that actually changes routing.
 func (r *Router) Forget(session string) {
-	delete(r.latched, session)
-}
-
-// tierFor applies the cutoff: strictly greater selects capable, so a score
-// exactly at the cutoff does not.
-func (r *Router) tierFor(score float64) (model, category string) {
-	if score > r.judge.Cutoff {
-		return r.first(categoryCapable), categoryCapable
-	}
-	return r.first(categoryEfficient), categoryEfficient
-}
-
-// fallback handles a judge that produced no usable verdict.
-func (r *Router) fallback(reason, message string) Outcome {
-	if !r.failOpen {
-		return Outcome{SelectedModelIDs: []string{}, Error: message, Calls: 1}
-	}
-	outcome := r.decide(r.first(categoryCapable), categoryCapable)
-	outcome.Calls = 1
-	outcome.Evidence = mustJSON(map[string]any{"source": "fail_open", "reason_code": reason})
-	return outcome
-}
-
-// decide builds an outcome with libsy's fallback ordering.
-func (r *Router) decide(model, category string) Outcome {
-	return Outcome{
-		SelectedModelIDs: r.ordered(model, category),
-		Model:            model,
-		Category:         category,
+	r.cascade.Forget(session)
+	if r.affinity != nil {
+		r.affinity.Forget(session)
 	}
 }
 
-// ordered reproduces libsy's fallback order: the pick, then the rest of the
-// category it was drawn from, then every other runtime target.
-func (r *Router) ordered(selected, category string) []string {
-	out := []string{selected}
-	add := func(list []string) {
-		for _, model := range list {
-			if model == selected || contains(out, model) {
-				continue
+// validatePool mirrors switchyard-runner: the selected target is resolved against
+// "any", so a group outside it can never be served.
+func validatePool(models Models) error {
+	any := models[categoryAny]
+	if len(any) == 0 {
+		return fmt.Errorf(
+			"models.any must list every routable target: the selected target is resolved against it")
+	}
+	for name, ids := range models {
+		if name == categoryAny || name == categoryJudge {
+			continue
+		}
+		for _, id := range ids {
+			if !contains(any, id) {
+				return fmt.Errorf("models.%s lists %q, which must also appear in models.any", name, id)
 			}
-			out = append(out, model)
 		}
 	}
-	add(r.models[category])
-	add(r.models[categoryAny])
-	return out
+	return nil
 }
 
-func (r *Router) first(category string) string {
-	if list := r.models[category]; len(list) > 0 {
-		return list[0]
+func contains(list []string, value string) bool {
+	for _, item := range list {
+		if item == value {
+			return true
+		}
 	}
-	return ""
-}
-
-// advantage reads p(advantage) from the judge's verdict, mirroring
-// DecisionClassifier: only a Choice answer with a probability in [0,1] counts.
-func advantage(response jev.DecisionResponse) (float64, bool) {
-	answer, ok := response.Answers["route"]
-	if !ok || answer.Value.Type != "choice" {
-		return 0, false
-	}
-	var data struct {
-		Probabilities map[string]float64 `json:"probabilities"`
-	}
-	if err := json.Unmarshal(answer.Value.Data, &data); err != nil {
-		return 0, false
-	}
-	score, ok := data.Probabilities["advantage"]
-	if !ok || score < 0 || score > 1 {
-		return 0, false
-	}
-	return score, true
+	return false
 }
 
 func mustJSON(value any) json.RawMessage {

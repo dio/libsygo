@@ -6,6 +6,15 @@
 // its own HTTP stack — keeps that ownership: TLS, credentials, retries and
 // timeouts all stay host-side. A host with no such stack can pass a [jev.Client].
 //
+// # Composition
+//
+// A profile is a [FallThrough]: a processor chain that accumulates facts into
+// per-session state, then a classifier cascade in which the first classifier to
+// score decides. The capability classifier is one member of that cascade and the
+// session latch is another, which is why those pieces are exported — the
+// remaining algorithm families are new classifiers and processors on the same
+// machinery, not new routers.
+//
 // # Scope
 //
 // Implemented: the capability classifier over a decision (System One / JEV)
@@ -29,8 +38,6 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
-	"fmt"
-	"sort"
 
 	"github.com/dio/libsygo/jev"
 )
@@ -126,114 +133,4 @@ type Turn struct {
 // egress out of this package.
 type Decider interface {
 	Call(ctx context.Context, request jev.DecisionRequest) (jev.DecisionResponse, error)
-}
-
-// fail point reasons reported in evidence.
-const (
-	reasonInvalidVerdict = "invalid_verdict"
-	reasonCallError      = "call_error"
-	reasonRetained       = "retained"
-)
-
-// buildJudgeRequest assembles the context and question that libsy's
-// DecisionClassifier sends to the judge.
-func (r *Router) buildJudgeRequest(prompt string) (jev.DecisionRequest, error) {
-	comparison, err := r.comparison()
-	if err != nil {
-		return jev.DecisionRequest{}, err
-	}
-
-	context, err := json.Marshal(map[string]any{
-		"task": []map[string]any{{
-			"role":    "user",
-			"content": []map[string]any{{"type": "text", "text": prompt}},
-		}},
-		"candidates": r.candidateLabels(),
-		"comparison": comparison,
-		"evidence":   r.judge.Evidence,
-	})
-	if err != nil {
-		return jev.DecisionRequest{}, err
-	}
-
-	options, err := json.Marshal(map[string]any{
-		"options": []map[string]any{
-			{"id": "advantage", "description": advantageDescription},
-			{"id": "no_advantage", "description": noAdvantageDescription},
-		},
-	})
-	if err != nil {
-		return jev.DecisionRequest{}, err
-	}
-
-	model := r.first(categoryJudge)
-	return jev.DecisionRequest{
-		Model:   &model,
-		Context: context,
-		Questions: map[string]jev.DecisionQuestion{
-			"route": {Instructions: r.instructions, Kind: jev.Tagged{Type: "choice", Data: options}},
-		},
-	}, nil
-}
-
-// candidateLabels are the labels in the order libsy's BTreeMap yields them.
-func (r *Router) candidateLabels() []string {
-	labels := make([]string, 0, len(r.judge.Candidates))
-	for label := range r.judge.Candidates {
-		labels = append(labels, label)
-	}
-	sort.Strings(labels)
-	return labels
-}
-
-// comparison names the labels of the runtime capable and efficient targets.
-func (r *Router) comparison() (map[string]string, error) {
-	capable, err := r.labelFor(r.first(categoryCapable))
-	if err != nil {
-		return nil, err
-	}
-	efficient, err := r.labelFor(r.first(categoryEfficient))
-	if err != nil {
-		return nil, err
-	}
-	return map[string]string{"capable": capable, "efficient": efficient}, nil
-}
-
-func (r *Router) labelFor(model string) (string, error) {
-	for _, label := range r.candidateLabels() {
-		if r.judge.Candidates[label] == model {
-			return label, nil
-		}
-	}
-	return "", fmt.Errorf("decision candidate is missing for target %q", model)
-}
-
-// validatePool mirrors switchyard-runner: the selected target is resolved against
-// "any", so a group outside it can never be served.
-func validatePool(models Models) error {
-	any := models[categoryAny]
-	if len(any) == 0 {
-		return fmt.Errorf(
-			"models.any must list every routable target: the selected target is resolved against it")
-	}
-	for name, ids := range models {
-		if name == categoryAny || name == categoryJudge {
-			continue
-		}
-		for _, id := range ids {
-			if !contains(any, id) {
-				return fmt.Errorf("models.%s lists %q, which must also appear in models.any", name, id)
-			}
-		}
-	}
-	return nil
-}
-
-func contains(list []string, value string) bool {
-	for _, item := range list {
-		if item == value {
-			return true
-		}
-	}
-	return false
 }
