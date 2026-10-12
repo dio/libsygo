@@ -34,6 +34,11 @@ type Outcome struct {
 	// decision to the route that made it.
 	Algorithm string
 
+	// Responded reports that routing produced a response rather than only a target.
+	// Only the noop algorithm answers, and a host that sees this should serve the
+	// response instead of calling anyone.
+	Responded bool
+
 	// Latched is true when a retained session decided this turn and no judge call
 	// was made.
 	Latched bool
@@ -58,6 +63,9 @@ type Outcome struct {
 type Router struct {
 	cascade  *FallThrough
 	affinity *AffinityRouter
+	// trivial names an algorithm that does not compose. The empty string means this
+	// router is a cascade, which is every algorithm that reads a request.
+	trivial string
 }
 
 // Algorithms this package builds.
@@ -68,6 +76,12 @@ const (
 	// AlgorithmStage is the signal router: read tool activity and pick a tier
 	// without asking anyone.
 	AlgorithmStage = "stage_router"
+	// AlgorithmPassthrough always selects the first routable target.
+	AlgorithmPassthrough = "passthrough"
+	// AlgorithmNoop answers without routing or calling anyone.
+	AlgorithmNoop = "noop"
+	// AlgorithmRandom is not implemented: see New.
+	AlgorithmRandom = "random"
 )
 
 // New builds a router, refusing anything not implemented rather than
@@ -78,6 +92,18 @@ func New(profile Profile, models Models) (*Router, error) {
 		return newCapabilityRouter(profile, models)
 	case AlgorithmStage:
 		return newStageRouter(profile, models)
+	case AlgorithmPassthrough:
+		return newPassthroughRouter(models)
+	case AlgorithmNoop:
+		return &Router{trivial: AlgorithmNoop}, nil
+	case AlgorithmRandom:
+		// A seeded pick is the Rust RNG's stream, not a distribution this could
+		// reproduce, and an unseeded pick cannot be recorded deterministically — so
+		// there is no honest way to claim this one.
+		return nil, fmt.Errorf(
+			"profile algorithm %q is not implemented: a seeded pick is the upstream RNG's "+
+				"stream rather than a distribution, and an unseeded one is not reproducible",
+			AlgorithmRandom)
 	default:
 		return nil, fmt.Errorf("profile algorithm %q is not implemented: %q and %q are",
 			profile.Algorithm, AlgorithmCapability, AlgorithmStage)
@@ -110,6 +136,29 @@ func newCapabilityRouter(profile Profile, models Models) (*Router, error) {
 		WithClassifier(DefaultCategoryClassifier{Category: categoryCapable})
 
 	return &Router{cascade: cascade, affinity: affinity}, nil
+}
+
+// newPassthroughRouter selects the first routable target and offers the rest as
+// fallbacks, without reading the request at all.
+func newPassthroughRouter(models Models) (*Router, error) {
+	if err := validatePool(models); err != nil {
+		return nil, err
+	}
+	return &Router{cascade: NewFallThrough(AlgorithmPassthrough, models).
+		WithClassifier(singleTargetClassifier{})}, nil
+}
+
+// singleTargetClassifier always selects the first routable target.
+type singleTargetClassifier struct{}
+
+func (singleTargetClassifier) Classify(
+	_ context.Context, _ *State, _ *Turn, driver *Driver,
+) (Classification, error) {
+	target := driver.FirstModel(categoryAny)
+	if target == "" {
+		return Classification{}, fmt.Errorf("passthrough: no routable target is configured")
+	}
+	return Scores(Score{Target: target, Category: categoryAny, Confidence: 1}), nil
 }
 
 // newCapabilityClassifier builds the decision-judge classifier a profile configures.
@@ -211,6 +260,9 @@ func newStageRouter(profile Profile, models Models) (*Router, error) {
 // a verdict that is missing, malformed, or the result of a failed call falls back
 // per FailOpen. A nil decider is treated as a failed call rather than a panic.
 func (r *Router) Route(ctx context.Context, turn Turn, decider Decider) Outcome {
+	if r.trivial == AlgorithmNoop {
+		return r.routeNoop(turn)
+	}
 	outcome, err := r.cascade.route(ctx, turn, decider)
 	if err != nil {
 		return Outcome{
@@ -220,6 +272,27 @@ func (r *Router) Route(ctx context.Context, turn Turn, decider Decider) Outcome 
 		}
 	}
 	return outcome
+}
+
+// routeNoop answers the request without routing it or calling anyone.
+//
+// It is a test and diagnostic algorithm: the request keeps the model it named, and the
+// answer is synthesized rather than fetched. The outcome says so, which is what
+// `response_present` records downstream — and it is the one algorithm here that
+// produces a response rather than selecting a model.
+func (r *Router) routeNoop(turn Turn) Outcome {
+	model := turn.Request.Model
+	if model == "" {
+		model = "switchyard/noop"
+	}
+	turn.Request.Model = model
+	return Outcome{
+		SelectedModelIDs: []string{model},
+		Model:            model,
+		Request:          turn.Request,
+		Algorithm:        AlgorithmNoop,
+		Responded:        true,
+	}
 }
 
 // Forget drops everything retained for a session — its composition state and its

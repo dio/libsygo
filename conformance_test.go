@@ -45,6 +45,7 @@ type corpusCase struct {
 	Models     Models            `json:"models"`
 	Headers    map[string]string `json:"headers"`
 	Prompt     *string           `json:"prompt"`
+	Model      *string           `json:"model"`
 	RawRequest json.RawMessage   `json:"raw_request"`
 	WireFormat string            `json:"wire_format"`
 	Decider    *corpusDecider    `json:"decider_responses"`
@@ -54,6 +55,7 @@ type corpusCase struct {
 type corpusTurn struct {
 	Headers    map[string]string `json:"headers"`
 	Prompt     *string           `json:"prompt"`
+	Model      *string           `json:"model"`
 	RawRequest json.RawMessage   `json:"raw_request"`
 	WireFormat string            `json:"wire_format"`
 	Decider    *corpusDecider    `json:"decider_responses"`
@@ -86,6 +88,7 @@ type goldenTurn struct {
 	MessagesDigest     string          `json:"messages_digest"`
 	Evidence           json.RawMessage `json:"evidence"`
 	Algorithm          *string         `json:"algorithm"`
+	ResponsePresent    bool            `json:"response_present"`
 	UnconsumedScripted int             `json:"unconsumed_scripted"`
 	Error              *string         `json:"error"`
 }
@@ -97,6 +100,7 @@ func (c corpusCase) turns() []corpusTurn {
 	return []corpusTurn{{
 		Headers:    c.Headers,
 		Prompt:     c.Prompt,
+		Model:      c.Model,
 		RawRequest: c.RawRequest,
 		WireFormat: c.WireFormat,
 		Decider:    c.Decider,
@@ -123,7 +127,13 @@ func (t corpusTurn) promptText() string {
 // divergence here is a real one rather than a difference in how a case is read.
 func (t corpusTurn) request() (LlmRequest, error) {
 	if len(t.RawRequest) == 0 {
-		return TextRequest(t.promptText()), nil
+		request := TextRequest(t.promptText())
+		// The model the request arrived addressed to, which routing replaces. An
+		// algorithm that does not route still reads it.
+		if t.Model != nil {
+			request.Model = *t.Model
+		}
+		return request, nil
 	}
 	switch t.WireFormat {
 	case "", "openai_chat":
@@ -270,6 +280,7 @@ func replayTurn(router *Router, caseID string, index int, turn corpusTurn) golde
 	result.Instructions = InstructionsJSON(outcome.Request.Instructions)
 	result.MessagesDigest = MessagesDigest(outcome.Request.Messages)
 	result.Evidence = outcome.Evidence
+	result.ResponsePresent = outcome.Responded
 	algorithm := outcome.Algorithm
 	result.Algorithm = &algorithm
 	return result
@@ -306,6 +317,9 @@ func compareTurn(t *testing.T, caseID string, index int, want, got goldenTurn) {
 
 	if want.MessagesDigest != got.MessagesDigest {
 		t.Errorf("%s: messages_digest = %s, want %s", at, got.MessagesDigest, want.MessagesDigest)
+	}
+	if want.ResponsePresent != got.ResponsePresent {
+		t.Errorf("%s: response_present = %v, want %v", at, got.ResponsePresent, want.ResponsePresent)
 	}
 	if want.UnconsumedScripted != got.UnconsumedScripted {
 		t.Errorf("%s: unconsumed_scripted = %d, want %d", at, got.UnconsumedScripted, want.UnconsumedScripted)

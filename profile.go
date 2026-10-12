@@ -21,17 +21,31 @@
 //
 //   - `llm_classifier` in `capability` mode: a judge is asked whether the cheap tier
 //     can handle the task, over the decision (System One / JEV) judge.
+//
 //   - `stage_router`: tool signals derived from the conversation — the tool vocabulary,
 //     the shell rules, severity bands and failure identity, the counts and their
 //     windows, error streaks, test detection and compaction — scored onto the capable
 //     and efficient tiers, with the picker's default, the three override reasons, the
 //     confidence threshold and the capable hold.
+//
 //   - The composition both rest on — the cascade, the per-session latch, the cutoff,
 //     fail-open, candidate ordering, and evidence — and request normalization.
 //
+//   - `passthrough` selects the first routable target and offers the rest as fallbacks.
+//
+//   - `noop` answers with a synthetic response, leaving the request's own model in place.
+//     It is the only algorithm here that responds rather than selects, which is what
+//     [Outcome.Responded] reports.
+//
 // Not implemented, and refused at construction: escalation, advisor gate, plan/execute,
-// composite, sub-agent, custom classifiers, LLM-text judges, and the
-// noop/random/passthrough algorithms.
+// composite, sub-agent, custom classifiers, and LLM-text judges.
+//
+// `random` is refused for a different reason, and one worth stating: a seeded pick is the
+// upstream RNG's *stream* — ChaCha12, seeded and sampled by a specific algorithm — rather
+// than a distribution this could reproduce. An unseeded pick is a distribution this could
+// reproduce, but it cannot be recorded deterministically, so there would be no gate for
+// it. Refusing is the honest option: a seeded profile that silently picked differently
+// would look like it worked.
 //
 // Declared gaps inside `stage_router`, each unverified rather than known wrong:
 //

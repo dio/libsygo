@@ -1,17 +1,13 @@
-// Tier 3 local profiles.
+// Tier 3 — single-target routing, recorded before it is ported.
 //
-// These are the load-bearing cases for owning transport in Envoy: a local
-// profile must emit `["Done"]` and make ZERO host calls. If a CallModel or
-// CallDecision ever appears here, the decider reached the network.
-//
-// `models.any` is required for fall-through routers: the selected target is
-// resolved against it, so every routable target must appear there too. Order
-// mirrors the runner: stage_router builds any as [capable, efficient].
-
-{"case_id":"noop/basic","tier":3,"profile":{"algorithm":"noop"},"models":{"any":["m/any"]},"prompt":"hello","model":"auto"}
+// It reads the `any` pool rather than a tier, so the second case is the one that pins
+// which list decides: `any` leads with a different target than `capable` does.
+{"case_id":"noop/basic","tier":1,"profile":{"algorithm":"noop"},"models":{"any":["m/any"]},"prompt":"hello","model":"auto"}
 {"case_id":"stage/efficient-first/no-tool-activity","tier":1,"profile":{"algorithm":"stage_router","picker":"efficient_first","confidence_threshold":0.5},"models":{"capable":["m/capable"],"efficient":["m/efficient"],"any":["m/capable","m/efficient"]},"prompt":"hello","model":"auto"}
 {"case_id":"stage/capable-first/no-tool-activity","tier":1,"profile":{"algorithm":"stage_router","picker":"capable_first","confidence_threshold":0.5},"models":{"capable":["m/capable"],"efficient":["m/efficient"],"any":["m/capable","m/efficient"]},"prompt":"hello","model":"auto"}
 {"case_id":"stage/efficient-first/tier-system-prompts","tier":1,"profile":{"algorithm":"stage_router","picker":"efficient_first","confidence_threshold":0.5,"capable_system_prompt":"Handle this request as the capable tier.","efficient_system_prompt":"Handle this request as the efficient tier."},"models":{"capable":["m/capable"],"efficient":["m/efficient"],"any":["m/capable","m/efficient"]},"prompt":"hello","model":"auto"}
 {"case_id":"stage/efficient-first/escalation-notes","tier":1,"profile":{"algorithm":"stage_router","picker":"efficient_first","confidence_threshold":0.5,"escalation_note":"The efficient tier failed; continue from its work.","deescalation_note":"The capable tier completed the recovery."},"models":{"capable":["m/capable"],"efficient":["m/efficient"],"any":["m/capable","m/efficient"]},"prompt":"hello","model":"auto"}
 {"case_id":"random/seeded-picks-b","tier":3,"profile":{"algorithm":"random","seed":1},"models":{"any":["m/a","m/b"]},"prompt":"hello","model":"auto"}
 {"case_id":"random/seeded-picks-a","tier":3,"profile":{"algorithm":"random","seed":2},"models":{"any":["m/a","m/b"]},"prompt":"hello","model":"auto"}
+{"case_id":"passthrough/selects-from-any","tier":1,"profile":{"algorithm":"passthrough"},"models":{"any":["m/a","m/b","m/c"]},"prompt":"hello","model":"auto"}
+{"case_id":"passthrough/any-outranks-the-tiers","tier":1,"profile":{"algorithm":"passthrough"},"models":{"any":["m/b","m/a"],"capable":["m/a"],"efficient":["m/b"]},"prompt":"hello","model":"auto"}
