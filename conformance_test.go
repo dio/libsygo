@@ -1,0 +1,447 @@
+package libsygo
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/dio/libsygo/jev"
+)
+
+// The corpus and its recorded golden are canonical here, in libsygo, because they
+// are this package's conformance spec — and a spec it cannot replay is not much of
+// one. The Rust oracle that *records* the golden lives in github.com/dio/switchyard-capi,
+// along with the upstream pin and the drift job, because recording needs a Rust
+// toolchain and a network fetch and this package must never need either.
+//
+// So this test is the hermetic half: pure Go, no toolchain, no network, run on every
+// commit. It decides whether this package still does what it did, not whether
+// upstream has moved — that is the drift job's question, and only the oracle can
+// answer it.
+//
+// Regenerate the golden with:
+//
+//	cd ../switchyard-capi && make verify   # the oracle still matches what is recorded
+//	cd ../switchyard-capi && cargo run -q -p libsy-conform -- --mode record
+
+// maxPortedTier is the highest corpus tier this package implements.
+//
+// Anything above it belongs to a family that is not ported. Replaying those would
+// report a failure that is a missing feature rather than a divergence, which would
+// train everyone to ignore the test.
+const maxPortedTier = 1
+
+// corpusCase mirrors the harness's case schema and the decider_responses fixtures.
+type corpusCase struct {
+	CaseID     string            `json:"case_id"`
+	Tier       *int              `json:"tier"`
+	Profile    Profile           `json:"profile"`
+	Models     Models            `json:"models"`
+	Headers    map[string]string `json:"headers"`
+	Prompt     *string           `json:"prompt"`
+	RawRequest json.RawMessage   `json:"raw_request"`
+	WireFormat string            `json:"wire_format"`
+	Decider    *corpusDecider    `json:"decider_responses"`
+	Turns      []corpusTurn      `json:"turns"`
+}
+
+type corpusTurn struct {
+	Headers    map[string]string `json:"headers"`
+	Prompt     *string           `json:"prompt"`
+	RawRequest json.RawMessage   `json:"raw_request"`
+	WireFormat string            `json:"wire_format"`
+	Decider    *corpusDecider    `json:"decider_responses"`
+}
+
+type corpusDecider struct {
+	ByIndex []corpusScripted `json:"by_index"`
+}
+
+type corpusScripted struct {
+	Kind     string          `json:"kind"`
+	Response json.RawMessage `json:"response"`
+	Message  string          `json:"message"`
+}
+
+// goldenTurn is one recorded oracle result. Only the fields this package is
+// responsible for are read; a field that appears in the golden but not here is one
+// another component owns.
+//
+// Reading the schema is deliberate: if the harness changes a field, this test stops
+// compiling or fails rather than passing while comparing less than it claims.
+type goldenTurn struct {
+	CaseID             string          `json:"case_id"`
+	Turn               int             `json:"turn"`
+	Steps              []string        `json:"steps"`
+	SelectedModelIDs   []string        `json:"selected_model_ids"`
+	SelectedModelID    *string         `json:"selected_model_id"`
+	RewrittenModel     *string         `json:"rewritten_model"`
+	Instructions       json.RawMessage `json:"instructions"`
+	MessagesDigest     string          `json:"messages_digest"`
+	Evidence           json.RawMessage `json:"evidence"`
+	Algorithm          *string         `json:"algorithm"`
+	UnconsumedScripted int             `json:"unconsumed_scripted"`
+	Error              *string         `json:"error"`
+}
+
+func (c corpusCase) turns() []corpusTurn {
+	if len(c.Turns) > 0 {
+		return c.Turns
+	}
+	return []corpusTurn{{
+		Headers:    c.Headers,
+		Prompt:     c.Prompt,
+		RawRequest: c.RawRequest,
+		WireFormat: c.WireFormat,
+		Decider:    c.Decider,
+	}}
+}
+
+func (t corpusTurn) fixtures() []corpusScripted {
+	if t.Decider == nil {
+		return nil
+	}
+	return t.Decider.ByIndex
+}
+
+func (t corpusTurn) session() string { return t.Headers["x-switchyard-session-id"] }
+
+func (t corpusTurn) promptText() string {
+	if t.Prompt == nil {
+		return ""
+	}
+	return *t.Prompt
+}
+
+// request builds the turn's normalized request the same way the harness does, so a
+// divergence here is a real one rather than a difference in how a case is read.
+func (t corpusTurn) request() (LlmRequest, error) {
+	if len(t.RawRequest) == 0 {
+		return TextRequest(t.promptText()), nil
+	}
+	switch t.WireFormat {
+	case "", "openai_chat":
+		return DecodeOpenAIChat(t.RawRequest)
+	default:
+		return LlmRequest{}, fmt.Errorf("wire format %q is not ported", t.WireFormat)
+	}
+}
+
+// scriptedDecider serves judge calls from a case's fixtures, in order, counting what
+// it consumed so an unconsumed fixture is visible as a routing surprise.
+type scriptedDecider struct {
+	fixtures []corpusScripted
+	consumed int
+	calls    int
+}
+
+func (d *scriptedDecider) Call(_ context.Context, _ jev.DecisionRequest) (jev.DecisionResponse, error) {
+	d.calls++
+	if d.consumed >= len(d.fixtures) {
+		return jev.DecisionResponse{}, fmt.Errorf("unexpected judge call: the case scripted no reply")
+	}
+	reply := d.fixtures[d.consumed]
+	d.consumed++
+	switch reply.Kind {
+	case "decision":
+		var response jev.DecisionResponse
+		if err := json.Unmarshal(reply.Response, &response); err != nil {
+			return jev.DecisionResponse{}, err
+		}
+		return response, nil
+	case "decision_error":
+		return jev.DecisionResponse{}, fmt.Errorf("%s", reply.Message)
+	default:
+		return jev.DecisionResponse{}, fmt.Errorf("scripted step %q cannot serve a judge call", reply.Kind)
+	}
+}
+
+func (d *scriptedDecider) unconsumed() int { return len(d.fixtures) - d.consumed }
+
+// TestCorpusReplaysTheRecordedGolden is the hermetic conformance check: every tier
+// the port covers, replayed against what the oracle recorded.
+func TestCorpusReplaysTheRecordedGolden(t *testing.T) {
+	pin, err := os.ReadFile(filepath.Join("testdata", "corpus", "PIN"))
+	if err != nil {
+		t.Fatalf("the corpus pin is missing: %v", err)
+	}
+	t.Logf("golden recorded from Switchyard %s", strings.TrimSpace(string(pin)))
+
+	suites, err := filepath.Glob(filepath.Join("testdata", "corpus", "*.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(suites) == 0 {
+		t.Fatal("no corpus suites found")
+	}
+	sort.Strings(suites)
+
+	compared, skipped := 0, 0
+	for _, path := range suites {
+		suite := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+		cases := loadCorpus(t, path)
+		golden := loadGolden(t, filepath.Join("testdata", "golden", suite+".jsonl"))
+
+		for _, c := range cases {
+			if c.Tier == nil || *c.Tier > maxPortedTier {
+				skipped++
+				continue
+			}
+			for index, result := range replayCase(c) {
+				key := goldenKey{c.CaseID, index}
+				want, recorded := golden[key]
+				if !recorded {
+					t.Errorf("%s turn %d: no recorded result", c.CaseID, index)
+					continue
+				}
+				compared++
+				compareTurn(t, c.CaseID, index, want, result)
+			}
+		}
+	}
+
+	if compared == 0 {
+		t.Fatal("nothing was compared: the tier filter and the corpus disagree")
+	}
+	t.Logf("compared %d turn(s); skipped %d case(s) above tier %d", compared, skipped, maxPortedTier)
+}
+
+// replayCase runs a case's turns against one router, so session state persists
+// across turns exactly as it would in production.
+func replayCase(c corpusCase) []goldenTurn {
+	router, err := New(c.Profile, c.Models)
+	if err != nil {
+		// A profile this package refuses is a rejection, which is what the oracle
+		// records for the same input.
+		return []goldenTurn{rejectedTurn(c.CaseID)}
+	}
+
+	var results []goldenTurn
+	for index, turn := range c.turns() {
+		results = append(results, replayTurn(router, c.CaseID, index, turn))
+	}
+	return results
+}
+
+func replayTurn(router *Router, caseID string, index int, turn corpusTurn) goldenTurn {
+	request, err := turn.request()
+	if err != nil {
+		return rejectedTurn(caseID)
+	}
+
+	decider := &scriptedDecider{fixtures: turn.fixtures()}
+	outcome := router.Route(context.Background(), Turn{
+		Request: request,
+		Session: turn.session(),
+	}, decider)
+
+	result := goldenTurn{
+		CaseID:             caseID,
+		Turn:               index,
+		UnconsumedScripted: decider.unconsumed(),
+	}
+	if outcome.Error != "" {
+		result.Steps = []string{"Error"}
+		if outcome.Calls > 0 {
+			result.Steps = []string{"CallDecision", "Error"}
+		}
+		result.SelectedModelIDs = []string{}
+		result.Error = &outcome.Error
+		return result
+	}
+
+	result.Steps = []string{"Done"}
+	if outcome.Calls > 0 {
+		result.Steps = []string{"CallDecision", "Done"}
+	}
+	result.SelectedModelIDs = outcome.SelectedModelIDs
+	result.SelectedModelID = &outcome.Model
+	result.RewrittenModel = &outcome.Model
+	result.Instructions = InstructionsJSON(request.Instructions)
+	result.MessagesDigest = MessagesDigest(request.Messages)
+	result.Evidence = outcome.Evidence
+	algorithm := AlgorithmName
+	result.Algorithm = &algorithm
+	return result
+}
+
+// rejectedTurn is the recorded shape of a request refused before it could route.
+// The oracle's wording is not compared anywhere — only the label — because two
+// implementations will not phrase a refusal identically.
+func rejectedTurn(caseID string) goldenTurn {
+	rejected := "request_rejected"
+	return goldenTurn{
+		CaseID:           caseID,
+		Steps:            []string{"Error"},
+		SelectedModelIDs: []string{},
+		Instructions:     json.RawMessage("null"),
+		Error:            &rejected,
+	}
+}
+
+func compareTurn(t *testing.T, caseID string, index int, want, got goldenTurn) {
+	t.Helper()
+	at := fmt.Sprintf("%s turn %d", caseID, index)
+
+	if diff := strings.Join(want.Steps, ","); diff != strings.Join(got.Steps, ",") {
+		t.Errorf("%s: steps = %v, want %v", at, got.Steps, want.Steps)
+	}
+	if diff := strings.Join(want.SelectedModelIDs, ","); diff != strings.Join(got.SelectedModelIDs, ",") {
+		t.Errorf("%s: selected_model_ids = %v, want %v", at, got.SelectedModelIDs, want.SelectedModelIDs)
+	}
+	compareOptionalString(t, at, "selected_model_id", want.SelectedModelID, got.SelectedModelID)
+	compareOptionalString(t, at, "rewritten_model", want.RewrittenModel, got.RewrittenModel)
+	compareOptionalString(t, at, "algorithm", want.Algorithm, got.Algorithm)
+	compareOptionalString(t, at, "error", want.Error, got.Error)
+
+	if want.MessagesDigest != got.MessagesDigest {
+		t.Errorf("%s: messages_digest = %s, want %s", at, got.MessagesDigest, want.MessagesDigest)
+	}
+	if want.UnconsumedScripted != got.UnconsumedScripted {
+		t.Errorf("%s: unconsumed_scripted = %d, want %d", at, got.UnconsumedScripted, want.UnconsumedScripted)
+	}
+
+	// Compared as JSON rather than as bytes: the oracle serializes with
+	// preserve_order and this package does not, so the same value can differ in key
+	// order. The harness compares parsed values for the same reason.
+	compareJSON(t, at, "instructions", want.Instructions, got.Instructions)
+	compareJSON(t, at, "evidence", want.Evidence, got.Evidence)
+}
+
+func compareOptionalString(t *testing.T, at, field string, want, got *string) {
+	t.Helper()
+	switch {
+	case want == nil && got == nil:
+	case want == nil || got == nil:
+		t.Errorf("%s: %s = %v, want %v", at, field, render(got), render(want))
+	case *want != *got:
+		t.Errorf("%s: %s = %q, want %q", at, field, *got, *want)
+	}
+}
+
+func render(value *string) string {
+	if value == nil {
+		return "null"
+	}
+	return fmt.Sprintf("%q", *value)
+}
+
+func compareJSON(t *testing.T, at, field string, want, got json.RawMessage) {
+	t.Helper()
+	wantValue := decodeJSON(want)
+	gotValue := decodeJSON(got)
+	if !jsonEqual(wantValue, gotValue) {
+		t.Errorf("%s: %s = %s, want %s", at, field, compactOrNull(got), compactOrNull(want))
+	}
+}
+
+func decodeJSON(raw json.RawMessage) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return string(raw)
+	}
+	return value
+}
+
+// jsonEqual compares decoded JSON structurally: objects by key and value, arrays in
+// order. Numbers decode to float64 on both sides, so 1 and 1.0 compare equal, which
+// is the same latitude the harness takes.
+func jsonEqual(a, b any) bool {
+	switch left := a.(type) {
+	case map[string]any:
+		right, ok := b.(map[string]any)
+		if !ok || len(left) != len(right) {
+			return false
+		}
+		for key, value := range left {
+			other, present := right[key]
+			if !present || !jsonEqual(value, other) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		right, ok := b.([]any)
+		if !ok || len(left) != len(right) {
+			return false
+		}
+		for index := range left {
+			if !jsonEqual(left[index], right[index]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return a == b
+	}
+}
+
+func compactOrNull(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "null"
+	}
+	return string(CompactJSON(raw))
+}
+
+// ---------------------------------------------------------------------------
+// Loading
+// ---------------------------------------------------------------------------
+
+type goldenKey struct {
+	caseID string
+	turn   int
+}
+
+func loadCorpus(t *testing.T, path string) []corpusCase {
+	t.Helper()
+	var cases []corpusCase
+	eachJSONLine(t, path, func(line []byte) {
+		var c corpusCase
+		if err := json.Unmarshal(line, &c); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		cases = append(cases, c)
+	})
+	return cases
+}
+
+func loadGolden(t *testing.T, path string) map[goldenKey]goldenTurn {
+	t.Helper()
+	golden := map[goldenKey]goldenTurn{}
+	eachJSONLine(t, path, func(line []byte) {
+		var turn goldenTurn
+		if err := json.Unmarshal(line, &turn); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		golden[goldenKey{turn.CaseID, turn.Turn}] = turn
+	})
+	return golden
+}
+
+// eachJSONLine reads a JSONL suite, ignoring blank lines and `//` comments, which is
+// how the corpus is authored.
+func eachJSONLine(t *testing.T, path string, visit func([]byte)) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	for number, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if !json.Valid([]byte(trimmed)) {
+			t.Fatalf("%s:%d: not valid JSON", path, number+1)
+		}
+		visit([]byte(trimmed))
+	}
+}
