@@ -1,0 +1,6 @@
+libsygo
+Copyright 2026 The libsygo authors
+
+This product is a Go implementation of software developed by NVIDIA Corporation:
+  Switchyard (https://github.com/NVIDIA-NeMo/Switchyard), Apache-2.0,
+  specifically the switchyard-libsy crate.
