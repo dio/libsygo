@@ -17,13 +17,25 @@
 //
 // # Scope
 //
-// Implemented: the capability classifier over a decision (System One / JEV)
-// judge, with the composition it needs — the cascade, the per-session latch, the
-// cutoff, fail-open, candidate ordering, and evidence.
+// Implemented:
 //
-// Not implemented, and refused at construction rather than approximated: the
-// signal router (tool signals), escalation, advisor gate, plan/execute,
-// composite, sub-agent, custom classifiers, and LLM-text judges.
+//   - `llm_classifier` in `capability` mode: a judge is asked whether the cheap tier
+//     can handle the task, over the decision (System One / JEV) judge.
+//   - `stage_router` as far as its fall-open path: the picker's default tier, the
+//     `fall_open` evidence, and the per-tier system prompts.
+//   - The composition both rest on — the cascade, the per-session latch, the cutoff,
+//     fail-open, candidate ordering, and evidence — and request normalization.
+//
+// Not implemented, and refused rather than approximated: **the stage router's tool
+// signals**. That one is worth stating precisely, because the refusal is the feature:
+// a turn carrying tool traffic is rejected rather than scored as signal-free. "No
+// signals" is a legitimate state that falls open to the picker's tier, so a port that
+// could not derive signals would reach it on every coding session and route all of
+// them to the default tier while looking like it worked.
+//
+// Also not implemented, and refused at construction: escalation, advisor gate,
+// plan/execute, composite, sub-agent, custom classifiers, LLM-text judges, and the
+// noop/random/passthrough algorithms.
 //
 // # Conformance
 //
