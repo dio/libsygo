@@ -21,29 +21,27 @@
 //
 //   - `llm_classifier` in `capability` mode: a judge is asked whether the cheap tier
 //     can handle the task, over the decision (System One / JEV) judge.
-//   - `stage_router` as far as its fall-open path: the picker's default tier, the
-//     `fall_open` evidence, and the per-tier system prompts.
+//   - `stage_router`: tool signals derived from the conversation — the tool vocabulary,
+//     the shell rules, severity bands and failure identity, the counts and their
+//     windows, error streaks, test detection and compaction — scored onto the capable
+//     and efficient tiers, with the picker's default, the three override reasons, the
+//     confidence threshold and the capable hold.
 //   - The composition both rest on — the cascade, the per-session latch, the cutoff,
 //     fail-open, candidate ordering, and evidence — and request normalization.
 //
-// Not implemented, and refused rather than approximated: **the stage router's tool
-// signals**. That one is worth stating precisely, because the refusal is the feature:
-// a turn carrying tool traffic is rejected rather than scored as signal-free. "No
-// signals" is a legitimate state that falls open to the picker's tier, so a port that
-// could not derive signals would reach it on every coding session and route all of
-// them to the default tier while looking like it worked.
-//
-// Also not implemented, and refused at construction: escalation, advisor gate,
-// plan/execute, composite, sub-agent, custom classifiers, LLM-text judges, and the
+// Not implemented, and refused at construction: escalation, advisor gate, plan/execute,
+// composite, sub-agent, custom classifiers, LLM-text judges, and the
 // noop/random/passthrough algorithms.
 //
-// The tool vocabulary is ported and tested, and so is the signal extraction that reads
-// a conversation through it — [ClassifyToolCall], [IsRetrievalTool] and the shell rules
-// they rest on, [SeverityOf] with the failure-identity rules beside it, and the counts,
-// windows, streaks and compaction that come out. None of it feeds a decision yet: the
-// stage router still refuses tool traffic rather than scoring it, and wiring these in
-// is the step that changes that. They are exported because a host that already parses
-// tool calls should be able to ask the same questions this package will.
+// Declared gaps inside `stage_router`, each unverified rather than known wrong:
+//
+//   - Handoff notes are not spliced in. They only fire on a signal-driven escalation,
+//     and no recorded case pairs one with a note.
+//   - The capable hold is keyed per session. Upstream refines it per agent id, which
+//     the ported request does not carry.
+//   - The Responses-only tool-result blocks (`apply_patch_call_output`,
+//     `shell_call_output`) and the tool-namespace extension are not read; nothing here
+//     decodes that wire format yet, so those branches belong with the decoder.
 //
 // # Conformance
 //
