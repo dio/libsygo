@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"math"
 	"strconv"
+	"strings"
 )
 
 // The conformance harness diffs a digest of the normalized messages rather than the
@@ -109,7 +111,25 @@ func appendOptionalBool(dst []byte, value *bool) []byte {
 }
 
 func appendFloat(dst []byte, value float64) []byte {
-	return strconv.AppendFloat(dst, value, 'g', -1, 64)
+	return append(dst, serdeFloat(value)...)
+}
+
+// serdeFloat renders a float the way serde_json does, which is not how Go does.
+//
+// An integral float keeps a fractional part, so 0.0 is not written as 0. The
+// difference is visible rather than cosmetic: the harness compares numbers as
+// serialized, so a confidence threshold of exactly 0 or 1 would otherwise be
+// indistinguishable from an integer, and a float-valued score of 1 would not match.
+func serdeFloat(value float64) json.Number {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		// Not representable in JSON; serde writes null.
+		return json.Number("null")
+	}
+	formatted := strconv.FormatFloat(value, 'g', -1, 64)
+	if !strings.ContainsAny(formatted, ".eE") {
+		formatted += ".0"
+	}
+	return json.Number(formatted)
 }
 
 func appendInt(dst []byte, value int64) []byte {

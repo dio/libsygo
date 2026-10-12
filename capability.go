@@ -65,8 +65,8 @@ func (c *capabilityClassifier) Classify(
 	driver.SetEvidence(map[string]any{
 		"source":    "decision_classifier",
 		"verdict":   "relative_advantage",
-		"score":     score,
-		"threshold": c.judge.Cutoff,
+		"score":     serdeFloat(score),
+		"threshold": serdeFloat(c.judge.Cutoff),
 	})
 	return Scores(Score{Target: target, Category: category, Confidence: 1}), nil
 }

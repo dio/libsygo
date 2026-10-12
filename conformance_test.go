@@ -1,6 +1,7 @@
 package libsygo
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -308,9 +309,12 @@ func compareTurn(t *testing.T, caseID string, index int, want, got goldenTurn) {
 		t.Errorf("%s: unconsumed_scripted = %d, want %d", at, got.UnconsumedScripted, want.UnconsumedScripted)
 	}
 
-	// Compared as JSON rather than as bytes: the oracle serializes with
-	// preserve_order and this package does not, so the same value can differ in key
-	// order. The harness compares parsed values for the same reason.
+	// Compared structurally but not semantically: object key order is ignored, because
+	// the oracle serializes with preserve_order and this package does not, while scalars
+	// are compared *as written*. That matters for numbers — serde writes a float-valued
+	// zero as 0.0 and Go writes 0, and the harness compares numbers as serialized — so a
+	// port that spells its floats differently has to fail here too rather than only in
+	// the Rust harness.
 	compareJSON(t, at, "instructions", want.Instructions, got.Instructions)
 	compareJSON(t, at, "evidence", want.Evidence, got.Evidence)
 }
@@ -335,54 +339,61 @@ func render(value *string) string {
 
 func compareJSON(t *testing.T, at, field string, want, got json.RawMessage) {
 	t.Helper()
-	wantValue := decodeJSON(want)
-	gotValue := decodeJSON(got)
-	if !jsonEqual(wantValue, gotValue) {
+	if !sameJSON(want, got) {
 		t.Errorf("%s: %s = %s, want %s", at, field, compactOrNull(got), compactOrNull(want))
 	}
 }
 
-func decodeJSON(raw json.RawMessage) any {
-	if len(raw) == 0 {
-		return nil
+// sameJSON compares two values the way the harness does: recursively, ignoring object
+// key order, and with scalars compared as they are written.
+func sameJSON(a, b json.RawMessage) bool {
+	left, right := bytes.TrimSpace(a), bytes.TrimSpace(b)
+	// An absent value and an explicit null are the same thing to the schema: the
+	// oracle's fields are optional, so both spell as null on its side.
+	if len(left) == 0 {
+		left = []byte("null")
 	}
-	var value any
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return string(raw)
+	if len(right) == 0 {
+		right = []byte("null")
 	}
-	return value
-}
-
-// jsonEqual compares decoded JSON structurally: objects by key and value, arrays in
-// order. Numbers decode to float64 on both sides, so 1 and 1.0 compare equal, which
-// is the same latitude the harness takes.
-func jsonEqual(a, b any) bool {
-	switch left := a.(type) {
-	case map[string]any:
-		right, ok := b.(map[string]any)
-		if !ok || len(left) != len(right) {
+	switch left[0] {
+	case '{':
+		var leftObject, rightObject map[string]json.RawMessage
+		if json.Unmarshal(left, &leftObject) != nil || json.Unmarshal(right, &rightObject) != nil {
 			return false
 		}
-		for key, value := range left {
-			other, present := right[key]
-			if !present || !jsonEqual(value, other) {
+		if len(leftObject) != len(rightObject) {
+			return false
+		}
+		for key, value := range leftObject {
+			other, present := rightObject[key]
+			if !present || !sameJSON(value, other) {
 				return false
 			}
 		}
 		return true
-	case []any:
-		right, ok := b.([]any)
-		if !ok || len(left) != len(right) {
+	case '[':
+		var leftArray, rightArray []json.RawMessage
+		if json.Unmarshal(left, &leftArray) != nil || json.Unmarshal(right, &rightArray) != nil {
 			return false
 		}
-		for index := range left {
-			if !jsonEqual(left[index], right[index]) {
+		if len(leftArray) != len(rightArray) {
+			return false
+		}
+		for index := range leftArray {
+			if !sameJSON(leftArray[index], rightArray[index]) {
 				return false
 			}
 		}
 		return true
+	case '"':
+		var leftText, rightText string
+		if json.Unmarshal(left, &leftText) != nil || json.Unmarshal(right, &rightText) != nil {
+			return false
+		}
+		return leftText == rightText
 	default:
-		return a == b
+		return string(left) == string(right)
 	}
 }
 

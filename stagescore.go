@@ -291,8 +291,8 @@ func (c *stageClassifier) Classify(
 	if outcome.source == SourceDimensions {
 		driver.SetEvidence(map[string]any{
 			"source":     string(outcome.source),
-			"confidence": confidence,
-			"threshold":  c.confidenceThreshold,
+			"confidence": serdeFloat(confidence),
+			"threshold":  serdeFloat(c.confidenceThreshold),
 		})
 	} else {
 		driver.SetEvidence(map[string]any{"source": string(outcome.source)})
