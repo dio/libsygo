@@ -37,11 +37,13 @@
 // plan/execute, composite, sub-agent, custom classifiers, LLM-text judges, and the
 // noop/random/passthrough algorithms.
 //
-// The tool vocabulary is ported and tested — [ClassifyToolCall], [IsRetrievalTool] and
-// the shell rules they rest on, plus [SeverityOf] and the failure-identity rules
-// beside it — but nothing walks a conversation to derive signals from them yet, so
-// they feed no decision. They are exported because a host that already parses tool
-// calls should be able to ask the same questions this package will.
+// The tool vocabulary is ported and tested, and so is the signal extraction that reads
+// a conversation through it — [ClassifyToolCall], [IsRetrievalTool] and the shell rules
+// they rest on, [SeverityOf] with the failure-identity rules beside it, and the counts,
+// windows, streaks and compaction that come out. None of it feeds a decision yet: the
+// stage router still refuses tool traffic rather than scoring it, and wiring these in
+// is the step that changes that. They are exported because a host that already parses
+// tool calls should be able to ask the same questions this package will.
 //
 // # Conformance
 //
