@@ -101,7 +101,7 @@ func TestCascadeFirstToScoreWins(t *testing.T) {
 		WithClassifier(stubClassifier{classification: Scores()}).
 		WithClassifier(second)
 
-	outcome, err := cascade.route(context.Background(), Turn{Prompt: "anything"}, nil)
+	outcome, err := cascade.route(context.Background(), Turn{Request: TextRequest("anything")}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestCascadeAbstentionFallsThroughToTheDefault(t *testing.T) {
 		WithClassifier(stubClassifier{classification: Scores()}).
 		WithClassifier(DefaultCategoryClassifier{Category: categoryCapable})
 
-	outcome, err := cascade.route(context.Background(), Turn{Prompt: "anything"}, nil)
+	outcome, err := cascade.route(context.Background(), Turn{Request: TextRequest("anything")}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestProcessorsObserveRequestThenDecision(t *testing.T) {
 		WithProcessor(recorder).
 		WithClassifier(stubClassifier{classification: Scores(Score{Target: "smart", Category: categoryCapable, Confidence: 1})})
 
-	if _, err := cascade.route(context.Background(), Turn{Prompt: "hi"}, nil); err != nil {
+	if _, err := cascade.route(context.Background(), Turn{Request: TextRequest("hi")}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(recorder.kinds) != 2 || recorder.kinds[0] != EventRequest || recorder.kinds[1] != EventDecision {

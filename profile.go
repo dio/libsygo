@@ -121,8 +121,10 @@ type Models map[string][]string
 
 // Turn is one request to route.
 type Turn struct {
-	// Prompt is the user text the judge evaluates.
-	Prompt string
+	// Request is the normalized request the algorithms read. Decode a provider
+	// body into it with [DecodeOpenAIChat], or build one with [TextRequest] when
+	// all a caller has is a prompt.
+	Request LlmRequest
 
 	// Session keys the latch. It MUST be tenant-namespaced by the caller:
 	// two tenants sharing a session id would share retained routing state.

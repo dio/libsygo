@@ -59,7 +59,7 @@ func main() {
 	fmt.Printf("%-56s %-8s %s\n", "prompt", "model", "evidence")
 	for _, request := range requests {
 		outcome := router.Route(ctx, libsygo.Turn{
-			Prompt:  request.prompt,
+			Request: libsygo.TextRequest(request.prompt),
 			Session: request.session,
 		}, decider)
 

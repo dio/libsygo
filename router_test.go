@@ -85,7 +85,7 @@ func TestCutoffIsStrictlyGreater(t *testing.T) {
 	} {
 		router := newTestRouter(t)
 		outcome := router.Route(context.Background(),
-			Turn{Prompt: "anything", Session: "s"},
+			Turn{Request: TextRequest("anything"), Session: "s"},
 			&fakeDecider{advantage: tc.advantage})
 
 		if outcome.Model != tc.want {
@@ -99,7 +99,7 @@ func TestCutoffIsStrictlyGreater(t *testing.T) {
 func TestSelectedModelIDsCarryTheFallbackOrder(t *testing.T) {
 	router := newTestRouter(t)
 	outcome := router.Route(context.Background(),
-		Turn{Prompt: "anything"},
+		Turn{Request: TextRequest("anything")},
 		&fakeDecider{advantage: 0.83})
 
 	want := []string{"smart", "cheap"}
@@ -117,7 +117,7 @@ func TestSelectedModelIDsCarryTheFallbackOrder(t *testing.T) {
 func TestEvidenceNamesTheRule(t *testing.T) {
 	router := newTestRouter(t)
 	outcome := router.Route(context.Background(),
-		Turn{Prompt: "anything"},
+		Turn{Request: TextRequest("anything")},
 		&fakeDecider{advantage: 0.83})
 
 	var evidence struct {
@@ -142,7 +142,7 @@ func TestEvidenceNamesTheRule(t *testing.T) {
 func TestJudgeFailureFailsOpenByDefault(t *testing.T) {
 	router := newTestRouter(t)
 	outcome := router.Route(context.Background(),
-		Turn{Prompt: "anything"},
+		Turn{Request: TextRequest("anything")},
 		&fakeDecider{err: errors.New("judge unavailable")})
 
 	if outcome.Error != "" {
@@ -178,7 +178,7 @@ func TestJudgeFailurePropagatesWhenFailClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	outcome := router.Route(context.Background(),
-		Turn{Prompt: "anything"},
+		Turn{Request: TextRequest("anything")},
 		&fakeDecider{err: errors.New("judge unavailable")})
 
 	if outcome.Error == "" {
@@ -199,7 +199,7 @@ func TestMissingScoreFailsOpenAsInvalidVerdict(t *testing.T) {
 			"route": {Value: jev.Tagged{Type: "score", Data: json.RawMessage(`{}`)}},
 		},
 	}}
-	outcome := router.Route(context.Background(), Turn{Prompt: "anything"}, decider)
+	outcome := router.Route(context.Background(), Turn{Request: TextRequest("anything")}, decider)
 
 	var evidence struct {
 		Source string `json:"source"`
@@ -218,8 +218,8 @@ func TestSessionLatchSkipsTheJudge(t *testing.T) {
 	router := newTestRouter(t)
 	decider := &fakeDecider{advantage: 0.83}
 
-	first := router.Route(context.Background(), Turn{Prompt: "one", Session: "tenant-a/s-1"}, decider)
-	second := router.Route(context.Background(), Turn{Prompt: "two", Session: "tenant-a/s-1"}, decider)
+	first := router.Route(context.Background(), Turn{Request: TextRequest("one"), Session: "tenant-a/s-1"}, decider)
+	second := router.Route(context.Background(), Turn{Request: TextRequest("two"), Session: "tenant-a/s-1"}, decider)
 
 	if decider.calls != 1 {
 		t.Fatalf("judge calls = %d, want 1; the second turn should be latched", decider.calls)
@@ -240,8 +240,8 @@ func TestDistinctSessionsAreJudgedSeparately(t *testing.T) {
 	router := newTestRouter(t)
 	decider := &fakeDecider{advantage: 0.83}
 
-	router.Route(context.Background(), Turn{Prompt: "one", Session: "tenant-a/s-1"}, decider)
-	router.Route(context.Background(), Turn{Prompt: "two", Session: "tenant-a/s-2"}, decider)
+	router.Route(context.Background(), Turn{Request: TextRequest("one"), Session: "tenant-a/s-1"}, decider)
+	router.Route(context.Background(), Turn{Request: TextRequest("two"), Session: "tenant-a/s-2"}, decider)
 
 	if decider.calls != 2 {
 		t.Fatalf("judge calls = %d, want 2", decider.calls)
@@ -253,9 +253,9 @@ func TestForgetReleasesALatchedSession(t *testing.T) {
 	router := newTestRouter(t)
 	decider := &fakeDecider{advantage: 0.83}
 
-	router.Route(context.Background(), Turn{Prompt: "one", Session: "s"}, decider)
+	router.Route(context.Background(), Turn{Request: TextRequest("one"), Session: "s"}, decider)
 	router.Forget("s")
-	router.Route(context.Background(), Turn{Prompt: "two", Session: "s"}, decider)
+	router.Route(context.Background(), Turn{Request: TextRequest("two"), Session: "s"}, decider)
 
 	if decider.calls != 2 {
 		t.Fatalf("judge calls = %d, want 2 after Forget", decider.calls)
@@ -306,7 +306,7 @@ func TestPoolMustListEveryTargetUnderAny(t *testing.T) {
 func TestJudgeIsAskedTheRouteChoice(t *testing.T) {
 	router := newTestRouter(t)
 	probe := &probeDecider{}
-	router.Route(context.Background(), Turn{Prompt: "refactor everything"}, probe)
+	router.Route(context.Background(), Turn{Request: TextRequest("refactor everything")}, probe)
 
 	if probe.seen == nil {
 		t.Fatal("the judge was not consulted")

@@ -39,7 +39,7 @@ func (c *capabilityClassifier) Classify(
 		return Classification{}, fmt.Errorf("no judge model is configured")
 	}
 
-	request, err := c.buildRequest(turn.Prompt, judgeModel, driver)
+	request, err := c.buildRequest(TaskMessages(turn.Request.Messages), judgeModel, driver)
 	if err != nil {
 		return Classification{}, err
 	}
@@ -90,8 +90,12 @@ func (c *capabilityClassifier) tier(score float64, driver *Driver) (model, categ
 
 // buildRequest assembles the context and question upstream's DecisionClassifier
 // sends to the judge.
+//
+// The task is the selected messages, not a flattened prompt: a judge is shown
+// conversation turns, and flattening them would lose the roles and block structure
+// upstream preserves.
 func (c *capabilityClassifier) buildRequest(
-	prompt string, judgeModel string, driver *Driver,
+	task []Message, judgeModel string, driver *Driver,
 ) (jev.DecisionRequest, error) {
 	capableLabel, err := labelFor(c.judge.Candidates, driver.FirstModel(categoryCapable))
 	if err != nil {
@@ -103,10 +107,7 @@ func (c *capabilityClassifier) buildRequest(
 	}
 
 	context, err := json.Marshal(map[string]any{
-		"task": []map[string]any{{
-			"role":    "user",
-			"content": []map[string]any{{"type": "text", "text": prompt}},
-		}},
+		"task":       json.RawMessage(AppendMessages(nil, task)),
 		"candidates": candidateLabels(c.judge.Candidates),
 		"comparison": map[string]string{"capable": capableLabel, "efficient": efficientLabel},
 		"evidence":   c.judge.Evidence,

@@ -58,8 +58,8 @@ if err != nil {
 }
 
 outcome := router.Route(ctx, libsygo.Turn{
-    Prompt:  prompt,
-    Session: tenantID + "/" + sessionID, // must be tenant-namespaced
+    Request: libsygo.TextRequest(prompt), // or DecodeOpenAIChat(body)
+    Session: tenantID + "/" + sessionID,  // must be tenant-namespaced
 }, decider)
 
 // outcome.Model is the pick; outcome.SelectedModelIDs is the fallback order;

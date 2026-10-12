@@ -96,6 +96,14 @@ type ExtensionField struct {
 	Value json.RawMessage
 }
 
+// TextRequest builds a request holding a single user message, for a caller that
+// has nothing but a prompt.
+func TextRequest(prompt string) LlmRequest {
+	return LlmRequest{
+		Messages: []Message{{Role: RoleUser, Content: []ContentBlock{Text(prompt)}}},
+	}
+}
+
 // Extension returns a provider field by its wire name.
 func (r LlmRequest) Extension(name string) (json.RawMessage, bool) {
 	for _, field := range r.Extensions {
