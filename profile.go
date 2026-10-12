@@ -37,6 +37,11 @@
 // plan/execute, composite, sub-agent, custom classifiers, LLM-text judges, and the
 // noop/random/passthrough algorithms.
 //
+// The tool vocabulary is ported and tested — [ClassifyToolCall], [IsRetrievalTool] and
+// the shell rules they rest on — but nothing derives signals from it yet, so it feeds
+// no decision. It is exported because a host that already parses tool calls should be
+// able to ask the same questions this package will.
+//
 // # Conformance
 //
 // Verified turn-for-turn against upstream libsy by the conformance harness in
