@@ -86,6 +86,7 @@ type goldenTurn struct {
 	RewrittenModel     *string         `json:"rewritten_model"`
 	Instructions       json.RawMessage `json:"instructions"`
 	MessagesDigest     string          `json:"messages_digest"`
+	ResponseFormat     json.RawMessage `json:"response_format"`
 	Evidence           json.RawMessage `json:"evidence"`
 	Algorithm          *string         `json:"algorithm"`
 	ResponsePresent    bool            `json:"response_present"`
@@ -281,6 +282,7 @@ func replayTurn(router *Router, caseID string, index int, turn corpusTurn) golde
 	// system prompt into the instructions, so the input is not what the model gets.
 	result.Instructions = InstructionsJSON(outcome.Request.Instructions)
 	result.MessagesDigest = MessagesDigest(outcome.Request.Messages)
+	result.ResponseFormat = outcome.Request.Output.ResponseFormat
 	result.Evidence = outcome.Evidence
 	result.ResponsePresent = outcome.Responded
 	algorithm := outcome.Algorithm
@@ -334,6 +336,7 @@ func compareTurn(t *testing.T, caseID string, index int, want, got goldenTurn) {
 	// port that spells its floats differently has to fail here too rather than only in
 	// the Rust harness.
 	compareJSON(t, at, "instructions", want.Instructions, got.Instructions)
+	compareJSON(t, at, "response_format", want.ResponseFormat, got.ResponseFormat)
 	compareJSON(t, at, "evidence", want.Evidence, got.Evidence)
 }
 
