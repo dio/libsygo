@@ -29,7 +29,10 @@
 //     confidence threshold and the capable hold.
 //
 //   - The composition both rest on — the cascade, the per-session latch, the cutoff,
-//     fail-open, candidate ordering, and evidence — and request normalization.
+//     fail-open, candidate ordering, and evidence.
+//
+//   - Request normalization for all three wire formats: OpenAI chat, Anthropic
+//     Messages, and OpenAI Responses.
 //
 //   - `passthrough` selects the first routable target and offers the rest as fallbacks.
 //
@@ -51,9 +54,9 @@
 //
 //   - The capable hold is keyed per session. Upstream refines it per agent id, which
 //     the ported request does not carry.
-//   - The Responses-only tool-result blocks (`apply_patch_call_output`,
-//     `shell_call_output`) and the tool-namespace extension are not read; nothing here
-//     decodes that wire format yet, so those branches belong with the decoder.
+//   - A tool namespace's *extension* record is not kept, so a namespaced call's bare
+//     name is not resolved when the signals look one up. The qualification itself — a
+//     call spelled the way its definition was — is applied.
 //
 // # Conformance
 //

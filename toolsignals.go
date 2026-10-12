@@ -1,6 +1,7 @@
 package libsygo
 
 import (
+	"encoding/json"
 	"strings"
 )
 
@@ -149,6 +150,28 @@ func extractToolSignals(request LlmRequest, recentWindow int, semantics ToolSema
 			case ContentText:
 				lower := strings.ToLower(block.Text)
 				compacted = compacted || isCompaction(lower)
+
+			case ContentUnknown:
+				// The Responses wire format represents a tool result as its own item
+				// rather than a message, and the failure shows up in provider-specific
+				// fields instead of in text. Both are read here because nowhere else
+				// will: this block is not conversation anyone can read.
+				if block.Provider != "openai_responses" {
+					continue
+				}
+				switch responsesItemType(block.Raw) {
+				case "apply_patch_call_output":
+					resultCount++
+					item, _ := objectFields(block.Raw)
+					status, _ := stringValue(rawField(item, "status"))
+					results = append(results, toolResultText{
+						text:    stringOrEmpty(item, "output"),
+						isError: status == "failed",
+					})
+				case "shell_call_output":
+					resultCount++
+					results = append(results, decodeShellCallOutput(block.Raw))
+				}
 			}
 		}
 	}
@@ -197,6 +220,64 @@ func observeToolCall(call *ToolCall, semantics ToolSemantics, retrievalCallIDs m
 		command:     command,
 		isRetrieval: isRetrieval,
 	}
+}
+
+// responsesItemType is the type discriminator of a carried Responses item.
+func responsesItemType(raw json.RawMessage) string {
+	item, err := objectFields(raw)
+	if err != nil {
+		return ""
+	}
+	kind, _ := stringValue(rawField(item, "type"))
+	return kind
+}
+
+// decodeShellCallOutput reads a shell call's structured result.
+//
+// Each output carries its own stdout and stderr and an outcome naming why it stopped. A
+// non-zero exit contributes the "returned non-zero" phrasing so the ordinary severity
+// table sees it, and counts as a failure only when it also wrote to stderr -- a command
+// that exits non-zero with nothing to say is a soft signal, not a diagnosis.
+func decodeShellCallOutput(raw json.RawMessage) toolResultText {
+	item, err := objectFields(raw)
+	if err != nil {
+		return toolResultText{}
+	}
+	var elements []json.RawMessage
+	if err := json.Unmarshal(rawField(item, "output"), &elements); err != nil {
+		return toolResultText{}
+	}
+
+	var (
+		texts   []string
+		isError bool
+	)
+	for _, element := range elements {
+		output, err := objectFields(element)
+		if err != nil {
+			continue
+		}
+		for _, name := range []string{"stdout", "stderr"} {
+			if text, ok := stringValue(rawField(output, name)); ok && text != "" {
+				texts = append(texts, text)
+			}
+		}
+		outcome, err := objectFields(rawField(output, "outcome"))
+		if err != nil {
+			continue
+		}
+		switch kind, _ := stringValue(rawField(outcome, "type")); kind {
+		case "timeout":
+			isError = true
+		case "exit":
+			if code, ok := int64Value(rawField(outcome, "exit_code")); ok && code != 0 {
+				texts = append(texts, "returned non-zero")
+				stderr, _ := stringValue(rawField(output, "stderr"))
+				isError = isError || strings.TrimSpace(stderr) != ""
+			}
+		}
+	}
+	return toolResultText{text: strings.Join(texts, "\n"), isError: isError}
 }
 
 // buildToolSignals turns the collected results and calls into the signal set.
