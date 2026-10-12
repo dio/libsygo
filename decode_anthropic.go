@@ -48,21 +48,6 @@ func DecodeAnthropicMessages(body []byte) (LlmRequest, error) {
 		maxTokens = &value
 	}
 
-	if raw, present := field(fields, "output_config"); present {
-		if config, err := objectFields(raw); err == nil {
-			if _, present := field(config, "format"); present {
-				return LlmRequest{}, &DecodeError{
-					Path:    "$.output_config.format",
-					Problem: "Anthropic structured output is not ported",
-				}
-			}
-		}
-	}
-	if _, present := field(fields, "output_format"); present {
-		return LlmRequest{}, &DecodeError{
-			Path: "$.output_format", Problem: "Anthropic structured output is not ported"}
-	}
-
 	request := LlmRequest{
 		Model:  stringOrEmpty(fields, "model"),
 		Stream: boolOrFalse(fields, "stream"),
@@ -73,6 +58,12 @@ func DecodeAnthropicMessages(body []byte) (LlmRequest, error) {
 		},
 		Output:    OutputParams{MaxOutputTokens: maxTokens},
 		Reasoning: ReasoningParams{Effort: anthropicEffort(fields)},
+	}
+	if format, ok := decodeAnthropicOutputFormat(fields); ok {
+		request.Output.ResponseFormat = format
+		// This provider enforces a schema it was given, so the format is never advisory.
+		enforced := true
+		request.Output.IsSchemaEnforced = &enforced
 	}
 
 	if raw, present := field(fields, "system"); present {
@@ -138,6 +129,56 @@ func DecodeAnthropicMessages(body []byte) (LlmRequest, error) {
 	}
 
 	return request, nil
+}
+
+// decodeAnthropicOutputFormat reads the current `output_config.format`, or the beta
+// `output_format` it replaced, into the neutral OpenAI-shaped response format.
+//
+// Three shapes are *dropped* rather than refused, and the difference matters: a caller
+// whose format this cannot represent still gets a routed request rather than a failure,
+// which is what upstream does and what keeps a half-supported format from blocking
+// traffic. What must not happen is carrying a malformed schema to the upstream, so a
+// schema that is not an object is dropped too.
+func decodeAnthropicOutputFormat(fields []jsonField) (json.RawMessage, bool) {
+	// The current field wins when it carries one; an absent `format` falls back to the
+	// beta field rather than being treated as "no format".
+	var (
+		raw     json.RawMessage
+		present bool
+	)
+	if config, err := objectFields(rawField(fields, "output_config")); err == nil {
+		if candidate, ok := field(config, "format"); ok {
+			raw, present = candidate, true
+		}
+	}
+	if !present {
+		raw, present = field(fields, "output_format")
+	}
+	if !present {
+		return nil, false
+	}
+
+	format, err := objectFields(raw)
+	if err != nil {
+		return nil, false
+	}
+	if kind, _ := stringValue(rawField(format, "type")); kind != "json_schema" {
+		return nil, false
+	}
+	schema, present := field(format, "schema")
+	if !present || !isObject(schema) {
+		return nil, false
+	}
+
+	// This provider identifies a schema by position, so the neutral shape needs a name
+	// invented for it. It is always the same name because nothing reads it back.
+	return objectLiteral(
+		jsonField{"type", jsonLiteral("json_schema")},
+		jsonField{"json_schema", objectLiteral(
+			jsonField{"name", jsonLiteral("response")},
+			jsonField{"schema", CompactJSON(schema)},
+		)},
+	), true
 }
 
 // anthropicKnownFields are the top-level fields the decoder recognizes. Anything else is
