@@ -261,11 +261,13 @@ func replayTurn(router *Router, caseID string, index int, turn corpusTurn) golde
 	}
 	result.SelectedModelIDs = outcome.SelectedModelIDs
 	result.SelectedModelID = &outcome.Model
-	result.RewrittenModel = &outcome.Model
-	result.Instructions = InstructionsJSON(request.Instructions)
-	result.MessagesDigest = MessagesDigest(request.Messages)
+	result.RewrittenModel = &outcome.Request.Model
+	// The rewritten request, not the one that went in: a decision can splice a tier
+	// system prompt into the instructions, so the input is not what the model gets.
+	result.Instructions = InstructionsJSON(outcome.Request.Instructions)
+	result.MessagesDigest = MessagesDigest(outcome.Request.Messages)
 	result.Evidence = outcome.Evidence
-	algorithm := AlgorithmName
+	algorithm := outcome.Algorithm
 	result.Algorithm = &algorithm
 	return result
 }

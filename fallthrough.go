@@ -100,12 +100,20 @@ func (f *FallThrough) route(ctx context.Context, turn Turn, judge Decider) (Outc
 		}
 	}
 
+	// The host replaces the addressed model with the selected target, and the
+	// outcome carries the request as the processors left it: a tier system prompt is
+	// part of what the model receives, not a side effect the caller has to know
+	// about and reproduce.
+	turn.Request.Model = winner.Target
+
 	evidence := driver.Evidence()
 	outcome := Outcome{
 		SelectedModelIDs: orderedCandidates(f.models, winner.Target, winner.Category),
 		Model:            winner.Target,
 		Category:         winner.Category,
 		Evidence:         evidence,
+		Request:          turn.Request,
+		Algorithm:        f.name,
 		Calls:            driver.Calls(),
 		Latched:          evidenceSource(evidence) == "retained",
 	}

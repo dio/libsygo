@@ -21,8 +21,18 @@ type Outcome struct {
 
 	// Evidence explains the decision and is what makes it auditable:
 	// `{source, verdict, score, threshold}` on a judgement, `{source: "retained"}`
-	// on a latched session, `{source: "fail_open", reason_code}` on a fallback.
+	// on a latched session, `{source: "fall_open", reason_code}` on a fallback.
 	Evidence json.RawMessage
+
+	// Request is the request as routing left it: the selected model is stamped
+	// into Model, and any processor that binds the decision — a tier system
+	// prompt, a handoff note — has already spliced itself in. This is what the
+	// model would receive, and it is not the request that was passed in.
+	Request LlmRequest
+
+	// Algorithm names what decided, for telemetry that has to attribute a
+	// decision to the route that made it.
+	Algorithm string
 
 	// Latched is true when a retained session decided this turn and no judge call
 	// was made.
@@ -50,43 +60,41 @@ type Router struct {
 	affinity *AffinityRouter
 }
 
+// Algorithms this package builds.
+const (
+	// AlgorithmCapability is the capability route: ask a judge whether the cheap
+	// tier can handle the task.
+	AlgorithmCapability = "llm_classifier"
+	// AlgorithmStage is the signal router: read tool activity and pick a tier
+	// without asking anyone.
+	AlgorithmStage = "stage_router"
+)
+
 // New builds a router, refusing anything not implemented rather than
 // approximating it.
 func New(profile Profile, models Models) (*Router, error) {
-	if profile.Algorithm != "llm_classifier" {
-		return nil, fmt.Errorf(
-			"profile algorithm %q is not implemented: only llm_classifier with a decision judge is",
-			profile.Algorithm)
+	switch profile.Algorithm {
+	case AlgorithmCapability:
+		return newCapabilityRouter(profile, models)
+	case AlgorithmStage:
+		return newStageRouter(profile, models)
+	default:
+		return nil, fmt.Errorf("profile algorithm %q is not implemented: %q and %q are",
+			profile.Algorithm, AlgorithmCapability, AlgorithmStage)
 	}
+}
+
+// newCapabilityRouter assembles the capability route.
+func newCapabilityRouter(profile Profile, models Models) (*Router, error) {
 	if profile.Mode != "capability" {
 		return nil, fmt.Errorf("llm_classifier mode %q is not implemented: only capability is", profile.Mode)
 	}
-	if profile.Judge == nil || profile.Judge.Type != "decision" {
-		return nil, fmt.Errorf("judge is not implemented: only the decision (System One) judge is")
-	}
-	if err := validatePool(models); err != nil {
+	capability, err := newCapabilityClassifier(profile, models)
+	if err != nil {
 		return nil, err
 	}
-	if len(models[categoryJudge]) == 0 {
-		return nil, fmt.Errorf("models.judge must name at least one judge model")
-	}
 
-	instructions := profile.Judge.Instructions
-	if len(instructions) == 0 {
-		instructions = json.RawMessage(relativeAdvantagePrompt)
-	}
-	failOpen := true
-	if profile.FailOpen != nil {
-		failOpen = *profile.FailOpen
-	}
-
-	capability := &capabilityClassifier{
-		judge:        profile.Judge,
-		instructions: instructions,
-		failOpen:     failOpen,
-	}
-
-	cascade := NewFallThrough("llm_classifier", models)
+	cascade := NewFallThrough(AlgorithmName, models)
 	var affinity *AffinityRouter
 	if classifyTrigger(profile.SessionAffinity) != EveryRequest {
 		// The latch leads the cascade: a retained session decides without a judge
@@ -102,6 +110,82 @@ func New(profile Profile, models Models) (*Router, error) {
 		WithClassifier(DefaultCategoryClassifier{Category: categoryCapable})
 
 	return &Router{cascade: cascade, affinity: affinity}, nil
+}
+
+// newCapabilityClassifier builds the decision-judge classifier a profile configures.
+func newCapabilityClassifier(profile Profile, models Models) (*capabilityClassifier, error) {
+	if profile.Judge == nil || profile.Judge.Type != "decision" {
+		return nil, fmt.Errorf("judge is not implemented: only the decision (System One) judge is")
+	}
+	if len(models[categoryJudge]) == 0 {
+		return nil, fmt.Errorf("models.judge must name at least one judge model")
+	}
+	instructions := profile.Judge.Instructions
+	if len(instructions) == 0 {
+		instructions = json.RawMessage(relativeAdvantagePrompt)
+	}
+	failOpen := true
+	if profile.FailOpen != nil {
+		failOpen = *profile.FailOpen
+	}
+	return &capabilityClassifier{
+		judge:        profile.Judge,
+		instructions: instructions,
+		failOpen:     failOpen,
+	}, nil
+}
+
+// newStageRouter assembles the signal router.
+//
+// The cascade is the signals, then the signals' own classifier, then the capability
+// judge when one is configured, and finally the picker's tier closing it — so a turn
+// the signals cannot decide gets the same verdict the capability route would give it,
+// and a turn nothing can decide is still routed.
+func newStageRouter(profile Profile, models Models) (*Router, error) {
+	if profile.ConfidenceThreshold < 0 || profile.ConfidenceThreshold > 1 {
+		return nil, fmt.Errorf("confidence_threshold must be between 0 and 1, got %v",
+			profile.ConfidenceThreshold)
+	}
+	defaultTier, err := profile.Picker.defaultTier()
+	if err != nil {
+		return nil, err
+	}
+	if err := validatePool(models); err != nil {
+		return nil, err
+	}
+
+	recentWindow := defaultRecentWindow
+	if profile.RecentWindow != nil {
+		recentWindow = *profile.RecentWindow
+	}
+
+	cascade := NewFallThrough(AlgorithmStage, models).
+		WithProcessor(toolSignalProcessor{recentWindow: recentWindow})
+
+	// The signal classifier sits here when it lands, between the signals that feed
+	// it and the fallback that catches what it cannot decide.
+
+	if profile.Judge != nil {
+		fallback, err := newCapabilityClassifier(profile, models)
+		if err != nil {
+			return nil, err
+		}
+		cascade.WithClassifier(sourceStamp{inner: fallback, source: SourceLlmClassifier})
+	}
+
+	cascade.WithClassifier(sourceStamp{
+		inner:  fallOpenClassifier{defaultTier: defaultTier},
+		source: SourceFallOpen,
+	})
+
+	if profile.CapableSystemPrompt != "" || profile.EfficientSystemPrompt != "" {
+		cascade.WithProcessor(tierPromptProcessor{
+			capable:   profile.CapableSystemPrompt,
+			efficient: profile.EfficientSystemPrompt,
+		})
+	}
+
+	return &Router{cascade: cascade}, nil
 }
 
 // Route decides one turn, making at most one judge call through decider.

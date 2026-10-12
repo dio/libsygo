@@ -85,6 +85,34 @@ type Profile struct {
 	// SessionAffinity retains the first target chosen for a session and reuses
 	// it, without calling the judge again.
 	SessionAffinity bool `json:"session_affinity"`
+
+	// --- stage_router ---
+
+	// Picker is the tier an undecided turn falls open to: "capable_first" or
+	// "efficient_first".
+	Picker PickerMode `json:"picker"`
+
+	// ConfidenceThreshold is how much corroboration a signal-driven pick needs, in
+	// [0, 1]. Signals that do not clear it abstain and the turn falls through.
+	ConfidenceThreshold float64 `json:"confidence_threshold"`
+
+	// RecentWindow is how many trailing tool results the signals are computed over.
+	// Nil uses the built-in default; an explicit zero is not the same as absent.
+	RecentWindow *int `json:"recent_window"`
+
+	// CapableHoldTurns keeps a session on the capable tier for this many requests
+	// after an escalation. Nil uses the built-in default; zero disables the hold.
+	CapableHoldTurns *uint32 `json:"capable_hold_turns"`
+
+	// CapableSystemPrompt and EfficientSystemPrompt are handed to the model a turn
+	// routes to, ahead of the client's own instructions.
+	CapableSystemPrompt   string `json:"capable_system_prompt"`
+	EfficientSystemPrompt string `json:"efficient_system_prompt"`
+
+	// EscalationNote and DeescalationNote are spliced into the request when the
+	// signals move a session between tiers.
+	EscalationNote   string `json:"escalation_note"`
+	DeescalationNote string `json:"deescalation_note"`
 }
 
 // Judge describes how the decider obtains a verdict.
