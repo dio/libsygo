@@ -128,6 +128,8 @@ func (t corpusTurn) request() (LlmRequest, error) {
 	switch t.WireFormat {
 	case "", "openai_chat":
 		return DecodeOpenAIChat(t.RawRequest)
+	case "anthropic_messages":
+		return DecodeAnthropicMessages(t.RawRequest)
 	default:
 		return LlmRequest{}, fmt.Errorf("wire format %q is not ported", t.WireFormat)
 	}

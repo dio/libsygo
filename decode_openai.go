@@ -33,11 +33,12 @@ var openAIChatFields = map[string]bool{
 	"reasoning_effort": true, "tools": true, "tool_choice": true,
 }
 
-// knownOpenAIRoles are role names the provider vocabulary includes but the
-// normalized conversation does not. They map to a user turn, which is their
-// historical meaning, rather than being refused as unknown.
-var knownOpenAIRoles = map[string]bool{
-	"user": true, "function": true,
+// knownRoleNames are the role names the provider vocabulary includes. One the
+// normalized conversation has no place for maps to a user turn, which is its historical
+// meaning, rather than being refused as unknown.
+var knownRoleNames = map[string]bool{
+	"system": true, "developer": true, "user": true, "assistant": true,
+	"tool": true, "function": true,
 }
 
 // DecodeOpenAIChat normalizes an OpenAI Chat Completions request body.
@@ -221,7 +222,7 @@ func openAIRole(fields []jsonField, path string) (Role, error) {
 	case "tool":
 		return RoleTool, nil
 	}
-	if knownOpenAIRoles[name] {
+	if knownRoleNames[name] {
 		return RoleUser, nil
 	}
 	return "", &DecodeError{
