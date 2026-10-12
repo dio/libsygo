@@ -87,6 +87,7 @@ type goldenTurn struct {
 	Instructions       json.RawMessage `json:"instructions"`
 	MessagesDigest     string          `json:"messages_digest"`
 	ResponseFormat     json.RawMessage `json:"response_format"`
+	JudgeTask          json.RawMessage `json:"judge_task"`
 	Evidence           json.RawMessage `json:"evidence"`
 	Algorithm          *string         `json:"algorithm"`
 	ResponsePresent    bool            `json:"response_present"`
@@ -154,10 +155,21 @@ type scriptedDecider struct {
 	fixtures []corpusScripted
 	consumed int
 	calls    int
+	// judgeTask is what the first judge call of the turn showed: the turn's *selection*
+	// rather than the conversation it was drawn from.
+	judgeTask json.RawMessage
 }
 
-func (d *scriptedDecider) Call(_ context.Context, _ jev.DecisionRequest) (jev.DecisionResponse, error) {
+func (d *scriptedDecider) Call(_ context.Context, request jev.DecisionRequest) (jev.DecisionResponse, error) {
 	d.calls++
+	if d.judgeTask == nil {
+		var context struct {
+			Task json.RawMessage `json:"task"`
+		}
+		if err := json.Unmarshal(request.Context, &context); err == nil {
+			d.judgeTask = context.Task
+		}
+	}
 	if d.consumed >= len(d.fixtures) {
 		return jev.DecisionResponse{}, fmt.Errorf("unexpected judge call: the case scripted no reply")
 	}
@@ -268,6 +280,9 @@ func replayTurn(router *Router, caseID string, index int, turn corpusTurn) golde
 		}
 		result.SelectedModelIDs = []string{}
 		result.Error = &outcome.Error
+		// A failed turn still showed the judge something, and the recorded result keeps
+		// it: the error path is not a reason to lose what was asked.
+		result.JudgeTask = decider.judgeTask
 		return result
 	}
 
@@ -283,6 +298,7 @@ func replayTurn(router *Router, caseID string, index int, turn corpusTurn) golde
 	result.Instructions = InstructionsJSON(outcome.Request.Instructions)
 	result.MessagesDigest = MessagesDigest(outcome.Request.Messages)
 	result.ResponseFormat = outcome.Request.Output.ResponseFormat
+	result.JudgeTask = decider.judgeTask
 	result.Evidence = outcome.Evidence
 	result.ResponsePresent = outcome.Responded
 	algorithm := outcome.Algorithm
@@ -337,6 +353,7 @@ func compareTurn(t *testing.T, caseID string, index int, want, got goldenTurn) {
 	// the Rust harness.
 	compareJSON(t, at, "instructions", want.Instructions, got.Instructions)
 	compareJSON(t, at, "response_format", want.ResponseFormat, got.ResponseFormat)
+	compareJSON(t, at, "judge_task", want.JudgeTask, got.JudgeTask)
 	compareJSON(t, at, "evidence", want.Evidence, got.Evidence)
 }
 
