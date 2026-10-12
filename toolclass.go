@@ -42,6 +42,10 @@ var (
 	bashToolNames = []string{"bash", "shell_command", "shell", "local_shell_call", "terminal", "exec_command", "exec", "powershell"}
 )
 
+// defaultCapableHoldTurns is how many turns a session stays on the capable tier after
+// a signal-driven escalation when a profile does not say.
+const defaultCapableHoldTurns = 2
+
 // ToolSemantics are route-scoped additions to the built-in vocabulary.
 //
 // Additive by construction: a built-in name cannot be reclassified, because the
@@ -49,13 +53,13 @@ var (
 // redefine `bash` would silently change what the recorded corpus means.
 type ToolSemantics struct {
 	// Observe are read-only lookup or inspection tools.
-	Observe []string
+	Observe []string `json:"observe"`
 	// Mutate are tools that change task or external state.
-	Mutate []string
+	Mutate []string `json:"mutate"`
 	// Plan are explicit planning or task-decomposition tools.
-	Plan []string
+	Plan []string `json:"plan"`
 	// New are tools that demonstrate forward activity without favouring either tier.
-	New []string
+	New []string `json:"new"`
 }
 
 // Validate rejects ambiguous mappings and attempts to reclassify built-in tools.

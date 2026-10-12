@@ -159,11 +159,27 @@ func newStageRouter(profile Profile, models Models) (*Router, error) {
 		recentWindow = *profile.RecentWindow
 	}
 
-	cascade := NewFallThrough(AlgorithmStage, models).
-		WithProcessor(toolSignalProcessor{recentWindow: recentWindow})
+	semantics := ToolSemantics{}
+	if profile.ToolSemantics != nil {
+		semantics = *profile.ToolSemantics
+		if err := semantics.Validate(); err != nil {
+			return nil, err
+		}
+	}
+	var holdTurns uint32 = defaultCapableHoldTurns
+	if profile.CapableHoldTurns != nil {
+		holdTurns = *profile.CapableHoldTurns
+	}
 
-	// The signal classifier sits here when it lands, between the signals that feed
-	// it and the fallback that catches what it cannot decide.
+	cascade := NewFallThrough(AlgorithmStage, models).
+		WithProcessor(toolSignalProcessor{recentWindow: recentWindow, semantics: semantics}).
+		// The signals decide the turns they are confident about; the rest of the
+		// cascade catches the ones they are not.
+		WithClassifier(&stageClassifier{
+			mode:                profile.Picker,
+			confidenceThreshold: profile.ConfidenceThreshold,
+			capableHoldTurns:    holdTurns,
+		})
 
 	if profile.Judge != nil {
 		fallback, err := newCapabilityClassifier(profile, models)

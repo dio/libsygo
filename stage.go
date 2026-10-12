@@ -2,7 +2,6 @@ package libsygo
 
 import (
 	"context"
-	"errors"
 	"fmt"
 )
 
@@ -202,42 +201,25 @@ func prependSystemPrompt(request *LlmRequest, prompt string) {
 
 // toolSignalProcessor derives the signals a stage router scores.
 //
-// Signals come from the conversation's tool traffic — which is the whole reason this
-// family reads messages rather than a prompt. Deriving them is the next slice of this
-// port, and until it lands a turn that carries tool traffic is *refused* rather than
-// scored as signal-free.
+// Signals come from the conversation's tool traffic, which is the whole reason this
+// family reads messages rather than a prompt: what an agent has been doing and how it
+// has been going is already in the request, so the router decides without asking
+// anyone.
 //
-// The distinction matters more than it looks. "No signals" is a legitimate state that
-// means "the signals have no opinion", and upstream falls open to the picker's tier
-// on it. A port that could not derive signals would reach that same state on every
-// coding session, and route all of them to the default tier while looking exactly
-// like it was working.
+// The signal is set even when the conversation carries no tool activity at all. An
+// empty signal is one that scores zero, which the classifier reads as "no opinion" and
+// passes on — different from never having run, which is what the classifier's nil
+// check is for.
 type toolSignalProcessor struct {
 	recentWindow int
+	semantics    ToolSemantics
 }
 
-func (p toolSignalProcessor) Process(_ *State, event Event) error {
+func (p toolSignalProcessor) Process(state *State, event Event) error {
 	if event.Kind != EventRequest || event.Turn == nil {
 		return nil
 	}
-	if !hasToolTraffic(event.Turn.Request.Messages) {
-		return nil
-	}
-	return errors.New(
-		"stage_router: tool signals are not ported yet, so a turn carrying tool " +
-			"traffic cannot be scored — refusing rather than falling open on it")
-}
-
-// hasToolTraffic reports whether a conversation carries anything the signal scorer
-// would read: a tool call or a tool result.
-func hasToolTraffic(messages []Message) bool {
-	for _, message := range messages {
-		for _, block := range message.Content {
-			switch block.Kind {
-			case ContentToolCall, ContentToolResult:
-				return true
-			}
-		}
-	}
-	return false
+	signals := extractToolSignals(event.Turn.Request, p.recentWindow, p.semantics)
+	state.ToolSignals = &signals
+	return nil
 }

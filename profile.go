@@ -133,6 +133,11 @@ type Profile struct {
 	// signals move a session between tiers.
 	EscalationNote   string `json:"escalation_note"`
 	DeescalationNote string `json:"deescalation_note"`
+
+	// ToolSemantics adds tool names to the built-in vocabulary. Additive: a built-in
+	// name cannot be reclassified, because the recorded signals were measured against
+	// the built-ins.
+	ToolSemantics *ToolSemantics `json:"tool_semantics"`
 }
 
 // Judge describes how the decider obtains a verdict.

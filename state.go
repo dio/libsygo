@@ -6,6 +6,11 @@ type State struct {
 	// TurnCount is how many turns this session has routed.
 	TurnCount uint32
 
+	// ToolSignals is what this turn's tool activity says about it, derived on the
+	// request side. Nil means no processor ran; a zero signal means one ran and the
+	// conversation carried no tool activity to read.
+	ToolSignals *ToolSignals
+
 	// Extra holds algorithm-specific facts keyed by stable internal names.
 	//
 	// Values are upstream's `StateValue` variants: string, uint32, int32, or
