@@ -35,8 +35,6 @@
 //
 // Declared gaps inside `stage_router`, each unverified rather than known wrong:
 //
-//   - Handoff notes are not spliced in. They only fire on a signal-driven escalation,
-//     and no recorded case pairs one with a note.
 //   - The capable hold is keyed per session. Upstream refines it per agent id, which
 //     the ported request does not carry.
 //   - The Responses-only tool-result blocks (`apply_patch_call_output`,
