@@ -266,6 +266,9 @@ func replayTurn(router *Router, caseID string, index int, turn corpusTurn) golde
 	outcome := router.Route(context.Background(), Turn{
 		Request: request,
 		Session: turn.session(),
+		// The harness context travels beside the conversation: it is what tells one
+		// agent's escalation from a sibling's.
+		Metadata: MetadataFromHeaders(turn.Headers),
 	}, decider)
 
 	result := goldenTurn{

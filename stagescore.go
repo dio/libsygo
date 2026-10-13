@@ -240,7 +240,7 @@ func (c *stageClassifier) Classify(
 		return Ambiguity(), nil
 	}
 
-	key := capableHoldKey
+	key := capableHoldKeyFor(turn)
 	// A clean pass after a failure clears the hold: the work is done.
 	cleanTestPass := signal.TestsPassed && signal.NoErrorStreak > 0
 	if cleanTestPass {
@@ -325,12 +325,21 @@ func handoffNotesFor(profile Profile) *handoffNotes {
 	return notes
 }
 
-// capableHoldKey is the state key the hold is counted under.
-//
-// Upstream refines it per agent id, so one agent's escalation does not hold a
-// sibling's turns on the capable tier. The ported request carries no agent id, so the
-// hold is per session — which is the scope a caller controls today.
+// capableHoldKey is the state key the hold is counted under when the request names no
+// agent.
 const capableHoldKey = "capable_hold_turns"
+
+// capableHoldKeyFor is the state key for one turn's hold.
+//
+// Suffixed per agent when the request names one, so one agent's escalation does not hold a
+// sibling's turns on the capable tier. The state itself stays per session, so the suffix
+// distinguishes agents within it rather than creating a second scope.
+func capableHoldKeyFor(turn *Turn) string {
+	if turn != nil && turn.Metadata.AgentID != "" {
+		return capableHoldKey + ":" + turn.Metadata.AgentID
+	}
+	return capableHoldKey
+}
 
 // consumeCapableHold spends one turn of the hold, reporting whether it applied.
 func consumeCapableHold(state *State, key string) bool {

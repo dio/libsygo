@@ -60,8 +60,11 @@
 //
 // Declared gaps inside `stage_router`, each unverified rather than known wrong:
 //
-//   - The capable hold is keyed per session. Upstream refines it per agent id, which
-//     the ported request does not carry.
+//   - [Metadata] is ported and the capable hold keys on the agent id when the harness
+//     supplies one — so one agent's escalation does not hold a sibling's turns. Two parts
+//     of it are read and not yet acted on: `SessionFinal`, which a host currently drives
+//     through [Router.Forget], and the sub-agent detection, which belongs with the
+//     sub-agent route that would consume it.
 //   - A tool namespace's *extension* record is not kept, so a namespaced call's bare
 //     name is not resolved when the signals look one up. The qualification itself — a
 //     call spelled the way its definition was — is applied.
@@ -217,6 +220,11 @@ type Turn struct {
 	// Session keys the latch. It MUST be tenant-namespaced by the caller:
 	// two tenants sharing a session id would share retained routing state.
 	Session string
+
+	// Metadata is the context the harness supplied beside the request. Its SessionID is
+	// the same value as Session when a host builds one from the other; both are kept
+	// because a host may key routing on a session it derived rather than read.
+	Metadata Metadata
 }
 
 // Decider performs one judge call. The host supplies it, which is what keeps
