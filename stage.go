@@ -112,19 +112,26 @@ type fallOpenClassifier struct {
 }
 
 func (c fallOpenClassifier) Classify(
-	_ context.Context, _ *State, _ *Turn, driver *Driver,
+	_ context.Context, state *State, _ *Turn, driver *Driver,
 ) (Classification, error) {
-	target := driver.FirstModel(string(c.defaultTier))
+	// Something ahead of the cascade may have overridden the default tier — composite's
+	// judge is the reason this exists — and an undecided turn then lands where that said
+	// rather than on the picker's default.
+	tier := c.defaultTier
+	if override, ok := fallOpenTier(state); ok {
+		tier = override
+	}
+	target := driver.FirstModel(string(tier))
 	if target == "" {
 		// Upstream propagates this rather than abstaining: a pool with no model for
 		// the default tier cannot route undecided turns at all, which is a
 		// configuration fault, not a turn that needs another opinion.
 		return Classification{}, fmt.Errorf(
-			"stage_router: no %s model is configured to fall open to", c.defaultTier)
+			"stage_router: no %s model is configured to fall open to", tier)
 	}
 	return Scores(Score{
 		Target:     target,
-		Category:   string(c.defaultTier),
+		Category:   string(tier),
 		Confidence: 0,
 	}), nil
 }

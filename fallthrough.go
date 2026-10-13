@@ -61,7 +61,8 @@ func (f *FallThrough) route(ctx context.Context, turn Turn, judge Decider) (Outc
 
 	// 1. Request-side processors accumulate facts.
 	for _, processor := range f.processors {
-		if err := processor.Process(state, Event{Kind: EventRequest, Turn: &turn}); err != nil {
+		request := Event{Kind: EventRequest, Turn: &turn, Context: ctx, Driver: driver}
+		if err := processor.Process(state, request); err != nil {
 			return Outcome{Calls: driver.Calls()}, err
 		}
 	}

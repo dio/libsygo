@@ -34,6 +34,12 @@
 //   - Request normalization for all three wire formats: OpenAI chat, Anthropic
 //     Messages, and OpenAI Responses.
 //
+//   - `composite`: a judge stacked over a stage router. The judge runs as a *processor*,
+//     sets the tier the stage router falls open to, and picks no target itself — so the
+//     signals decide the turns they can and the judge decides the rest, rather than two
+//     routers disagreeing about the same turn. Verdicts are retained per routing identity
+//     and replayed, so a judged session is not judged again.
+//
 //   - `passthrough` selects the first routable target and offers the rest as fallbacks.
 //
 //   - `noop` answers with a synthetic response, leaving the request's own model in place.
@@ -41,7 +47,9 @@
 //     [Outcome.Responded] reports.
 //
 // Not implemented, and refused at construction: escalation, advisor gate, plan/execute,
-// composite, sub-agent, custom classifiers, and LLM-text judges.
+// sub-agent, custom classifiers, and LLM-text judges. All but the sub-agent router need a
+// model call, which this package does not make — the host does, through [Decider] — so
+// porting them means giving the composition a step it does not have yet.
 //
 // `random` is refused for a different reason, and one worth stating: a seeded pick is the
 // upstream RNG's *stream* — ChaCha12, seeded and sampled by a specific algorithm — rather
@@ -151,6 +159,15 @@ type Profile struct {
 	// signals made. Nil means yes, which is the safe default: an ungated note can tell
 	// the capable model the efficient one was stalling when it was not.
 	OnlyOnWrongSignalEscalation *bool `json:"only_on_wrong_signal_escalation"`
+
+	// ClassifyTrigger says how often a judge re-decides: "user_turn" or "new_session".
+	// Composite requires one of those; absent means every request, which is the
+	// standalone route's historical behaviour.
+	ClassifyTrigger string `json:"classify_trigger"`
+
+	// MessageHashFallback keys retention by the opening task when a request carries no
+	// session, so an unkeyed caller still gets one task held to one tier.
+	MessageHashFallback bool `json:"message_hash_fallback"`
 
 	// ToolSemantics adds tool names to the built-in vocabulary. Additive: a built-in
 	// name cannot be reclassified, because the recorded signals were measured against

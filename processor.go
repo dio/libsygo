@@ -1,5 +1,7 @@
 package libsygo
 
+import "context"
+
 // EventKind names what a processor is observing.
 type EventKind int
 
@@ -14,6 +16,10 @@ const (
 
 // Event is what a processor observes as the algorithm runs.
 //
+// Request-bearing events carry the driver and the context, because a processor may consult
+// a classifier: the composite tier setter runs a judge before the cascade decides, and a
+// processor with no way to reach the host could not.
+//
 // Request-bearing events carry a rewritable turn, so a processor may add
 // instructions bound to the routing outcome — a tier system prompt, a handoff
 // note — and the edit reaches the model.
@@ -22,6 +28,11 @@ type Event struct {
 
 	// Turn is set on EventRequest and EventDecision.
 	Turn *Turn
+
+	// Context and Driver are set on EventRequest, and are what a processor uses to
+	// consult a classifier.
+	Context context.Context
+	Driver  *Driver
 
 	// SelectedModel and Category are set on EventDecision.
 	SelectedModel string

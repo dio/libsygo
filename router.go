@@ -76,6 +76,9 @@ const (
 	// AlgorithmStage is the signal router: read tool activity and pick a tier
 	// without asking anyone.
 	AlgorithmStage = "stage_router"
+	// AlgorithmComposite is a judge stacked over a stage router: the judge sets the tier
+	// the stage router falls open to, and picks no target itself.
+	AlgorithmComposite = "composite"
 	// AlgorithmPassthrough always selects the first routable target.
 	AlgorithmPassthrough = "passthrough"
 	// AlgorithmNoop answers without routing or calling anyone.
@@ -92,6 +95,8 @@ func New(profile Profile, models Models) (*Router, error) {
 		return newCapabilityRouter(profile, models)
 	case AlgorithmStage:
 		return newStageRouter(profile, models)
+	case AlgorithmComposite:
+		return newCompositeRouter(profile, models)
 	case AlgorithmPassthrough:
 		return newPassthroughRouter(models)
 	case AlgorithmNoop:
@@ -191,6 +196,21 @@ func newCapabilityClassifier(profile Profile, models Models) (*capabilityClassif
 // the signals cannot decide gets the same verdict the capability route would give it,
 // and a turn nothing can decide is still routed.
 func newStageRouter(profile Profile, models Models) (*Router, error) {
+	cascade, err := buildStageRoute(AlgorithmStage, profile, models, profile.Judge)
+	if err != nil {
+		return nil, err
+	}
+	return &Router{cascade: cascade}, nil
+}
+
+// buildStageRoute assembles the stage cascade, named for the algorithm that owns it.
+//
+// `fallback` is the judge the cascade consults for turns the signals cannot decide. It is
+// nil for composite, whose profile judge is the tier setter's rather than a cascade member
+// — wiring it in twice would put it in front of its own verdict.
+func buildStageRoute(
+	name string, profile Profile, models Models, fallback *Judge,
+) (*FallThrough, error) {
 	if profile.ConfidenceThreshold < 0 || profile.ConfidenceThreshold > 1 {
 		return nil, fmt.Errorf("confidence_threshold must be between 0 and 1, got %v",
 			profile.ConfidenceThreshold)
@@ -220,7 +240,7 @@ func newStageRouter(profile Profile, models Models) (*Router, error) {
 		holdTurns = *profile.CapableHoldTurns
 	}
 
-	cascade := NewFallThrough(AlgorithmStage, models).
+	cascade := NewFallThrough(name, models).
 		WithProcessor(toolSignalProcessor{recentWindow: recentWindow, semantics: semantics}).
 		// The signals decide the turns they are confident about; the rest of the
 		// cascade catches the ones they are not.
@@ -231,12 +251,12 @@ func newStageRouter(profile Profile, models Models) (*Router, error) {
 			notes:               handoffNotesFor(profile),
 		})
 
-	if profile.Judge != nil {
-		fallback, err := newCapabilityClassifier(profile, models)
+	if fallback != nil {
+		judge, err := newCapabilityClassifier(profile, models)
 		if err != nil {
 			return nil, err
 		}
-		cascade.WithClassifier(sourceStamp{inner: fallback, source: SourceLlmClassifier})
+		cascade.WithClassifier(sourceStamp{inner: judge, source: SourceLlmClassifier})
 	}
 
 	cascade.WithClassifier(sourceStamp{
@@ -251,7 +271,7 @@ func newStageRouter(profile Profile, models Models) (*Router, error) {
 		})
 	}
 
-	return &Router{cascade: cascade}, nil
+	return cascade, nil
 }
 
 // Route decides one turn, making at most one judge call through decider.
